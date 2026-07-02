@@ -100,6 +100,15 @@ class Settings:
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 raw = yaml.safe_load(f)
+        # On Streamlit Community Cloud /tmp is writable; use it for the DB
+        if self.database.path == "data/sqe.db":
+            import platform
+            if not os.path.isabs(self.database.path):
+                # Make writable on cloud (Streamlit sets HOME=/home/appuser)
+                home = os.path.expanduser("~")
+                data_dir = os.path.join(home, ".sqe_data")
+                os.makedirs(data_dir, exist_ok=True)
+                self.database.path = os.path.join(data_dir, "sqe.db")
             self._raw = raw
             self._load(raw)
 

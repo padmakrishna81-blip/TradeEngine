@@ -1,6 +1,6 @@
 app:
   name: STATE Quant Engine
-  theme: dark
+  theme: light
   version: 1.0.0
 data:
   cache_ttl_minutes: 15

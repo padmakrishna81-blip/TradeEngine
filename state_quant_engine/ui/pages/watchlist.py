@@ -55,6 +55,45 @@ def render(settings: Any, version_id: int = 1) -> None:
             if not items:
                 st.info(f"No symbols in '{sel_group.name}'. Use the Add Symbol tab.")
             else:
+                # ── HTML display table with colored Enabled badge ─────────
+                rows_html = []
+                for i in items:
+                    enabled_badge = (
+                        '<span style="background:#00C853;color:#000;padding:2px 9px;'
+                        'border-radius:4px;font-weight:700;font-size:0.82em">✔ Active</span>'
+                        if i.enabled else
+                        '<span style="background:#D50000;color:#fff;padding:2px 9px;'
+                        'border-radius:4px;font-weight:700;font-size:0.82em">✖ Disabled</span>'
+                    )
+                    type_color = "#2979FF" if i.asset_type == "ETF" else "#607D8B"
+                    rows_html.append(
+                        f"<tr>"
+                        f"<td><b>{i.symbol}</b></td>"
+                        f"<td>{i.name or '—'}</td>"
+                        f"<td><span style='color:{type_color};font-weight:700'>{i.asset_type}</span></td>"
+                        f"<td>{i.exchange or '—'}</td>"
+                        f"<td style='text-align:center'>{i.priority}</td>"
+                        f"<td style='text-align:center'>{enabled_badge}</td>"
+                        f"</tr>"
+                    )
+                table_html = """
+                <style>
+                  .wl-table { width:100%; border-collapse:collapse; font-size:0.9em; }
+                  .wl-table th { background:#1e2a3a; color:#aac4e0; padding:7px 10px;
+                                 text-align:left; border-bottom:2px solid #2e3f55; }
+                  .wl-table td { padding:6px 10px; border-bottom:1px solid #1a2535; vertical-align:middle; }
+                  .wl-table tr:hover td { background:#1a2435; }
+                </style>
+                <table class="wl-table">
+                  <thead><tr>
+                    <th>Symbol</th><th>Name</th><th>Type</th><th>Exchange</th>
+                    <th>Priority</th><th>Status</th>
+                  </tr></thead>
+                  <tbody>""" + "".join(rows_html) + "</tbody></table>"
+                st.markdown(table_html, unsafe_allow_html=True)
+                st.caption("Edit values below to update name, type, exchange, priority or toggle enabled.")
+
+                # ── Editable data_editor below the display table ──────────
                 data = [{
                     "Symbol": i.symbol, "Name": i.name or "",
                     "Type": i.asset_type, "Exchange": i.exchange or "",
