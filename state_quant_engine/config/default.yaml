@@ -1,0 +1,294 @@
+app:
+  name: STATE Quant Engine
+  theme: dark
+  version: 1.0.0
+data:
+  cache_ttl_minutes: 15
+  download_interval: 1d
+  download_period: 1y
+  drawdown_days: 30
+database:
+  path: data/sqe.db
+default_watchlist:
+  etfs:
+  - exchange: NSE
+    name: Nifty BeES
+    symbol: NIFTYBEES.NS
+  - exchange: NSE
+    name: Bank BeES
+    symbol: BANKBEES.NS
+  - exchange: NSE
+    name: Motilal Oswal NASDAQ 100
+    symbol: MON100.NS
+  - exchange: NSE
+    name: Mirae Asset FANG+
+    symbol: MAFANG.NS
+  - exchange: NSE
+    name: Nifty Midcap 150 BeES
+    symbol: MID150BEES.NS
+  stocks:
+  - exchange: NSE
+    name: Bharat Electronics
+    symbol: BEL.NS
+  - exchange: NSE
+    name: Larsen & Toubro
+    symbol: LT.NS
+  - exchange: NSE
+    name: Reliance Industries
+    symbol: RELIANCE.NS
+  - exchange: NSE
+    name: HDFC Bank
+    symbol: HDFCBANK.NS
+  - exchange: NSE
+    name: ICICI Bank
+    symbol: ICICIBANK.NS
+  - exchange: NSE
+    name: Bharti Airtel
+    symbol: BHARTIARTL.NS
+  - exchange: NSE
+    name: NTPC
+    symbol: NTPC.NS
+  - exchange: NSE
+    name: Infosys
+    symbol: INFY.NS
+  - exchange: NSE
+    name: Sun Pharmaceutical
+    symbol: SUNPHARMA.NS
+  - exchange: NSE
+    name: Zomato (Eternal)
+    symbol: ETERNAL.NS
+etf_capital:
+  chunk_percentages:
+  - 20
+  - 20
+  - 20
+  - 20
+  - 20
+  next_buy_triggers:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 2.0
+  - 3.0
+  num_chunks: 5
+  total: 2000000
+exit_strategies:
+  health:
+    enabled: true
+    min_score: 35
+  momentum:
+    enabled: true
+  risk:
+    atr_multiplier: 2.5
+    enabled: true
+    vix_threshold: 25
+  time:
+    enabled: true
+    max_days: 90
+    min_profit: 0
+  trailing:
+    enabled: true
+    profit_threshold: 5.0
+    trail_percent: 2.0
+health_parameters:
+- description: Price above 200-day moving average
+  enabled: true
+  name: 200 DMA
+  threshold: 0
+  weight: 20
+- description: Price above 50-day moving average
+  enabled: true
+  name: 50 DMA
+  threshold: 0
+  weight: 10
+- description: RSI above threshold (bullish momentum)
+  enabled: true
+  name: RSI
+  threshold: 50
+  weight: 15
+- description: MACD line above signal line
+  enabled: true
+  name: MACD
+  threshold: 0
+  weight: 10
+- description: ADX above threshold (trending)
+  enabled: true
+  name: ADX
+  threshold: 20
+  weight: 10
+- description: ATR-based volatility check
+  enabled: true
+  name: ATR
+  threshold: 0
+  weight: 5
+- description: Volume above average (spike factor)
+  enabled: true
+  name: Volume Spike
+  threshold: 1.5
+  weight: 5
+- description: Relative strength vs NIFTY
+  enabled: true
+  name: Relative Strength
+  threshold: 1.0
+  weight: 10
+- description: Drawdown from swing high within limit
+  enabled: true
+  name: Drawdown
+  threshold: -15
+  weight: 10
+- description: India VIX below threshold
+  enabled: true
+  name: VIX
+  threshold: 20
+  weight: 5
+- description: Market breadth above threshold
+  enabled: true
+  name: Breadth
+  threshold: 0.5
+  weight: 10
+health_scores:
+  buy_threshold: 70
+  exit_threshold: 35
+  hold_threshold: 50
+  watch_threshold: 35
+logging:
+  level: INFO
+  path: logs/sqe.log
+  retention: 30 days
+  rotation: 1 day
+market:
+  close_time: '15:30'
+  open_time: 09:15
+  timezone: Asia/Kolkata
+market_deploy_tiers:
+- deploy_pct: 100
+  label: Full Deploy
+  min: 80
+- deploy_pct: 75
+  label: 75% Deploy
+  min: 60
+- deploy_pct: 50
+  label: 50% Deploy
+  min: 40
+- deploy_pct: 25
+  label: 25% / Hold Cash
+  min: 0
+market_health_parameters:
+- description: India VIX — graduated scoring (lower = better)
+  enabled: true
+  name: VIX
+  threshold: 20
+  weight: 40
+- description: Fraction of NIFTY50 stocks above 200 EMA
+  enabled: true
+  name: Market Breadth
+  threshold: 0.5
+  weight: 40
+- description: NIFTY 50 trading above its own 200 EMA
+  enabled: true
+  name: Nifty 200 DMA
+  threshold: 0
+  weight: 20
+profit_management:
+  full_exit_threshold: 3.0
+  partial_exit_threshold: 3.0
+  profit_threshold: 3.0
+  strong_hold_health_min: 70
+  strong_hold_trend: Bullish
+stock_capital:
+  chunk_percentages:
+  - 35
+  - 35
+  - 30
+  max_per_stock: 100000
+  num_chunks: 3
+  num_stocks: 10
+  total: 1000000
+stock_health_parameters:
+- description: Price above 200-day moving average
+  enabled: true
+  name: 200 DMA
+  threshold: 0
+  weight: 25
+- description: 'Bell-curve: ideal 5-8% pullback from swing high'
+  enabled: true
+  name: Drawdown
+  threshold: 0
+  weight: 20
+- description: Outperforming NIFTY on 20-day return
+  enabled: true
+  name: Relative Strength
+  threshold: 1.0
+  weight: 20
+- description: Volume ≥ 1.5× 20-day average
+  enabled: true
+  name: Volume Spike
+  threshold: 1.5
+  weight: 15
+- description: RSI above 50 (bullish momentum)
+  enabled: true
+  name: RSI
+  threshold: 50
+  weight: 10
+- description: MACD line above signal line
+  enabled: true
+  name: MACD
+  threshold: 0
+  weight: 10
+strategies:
+- description: Long-term ETF investing with wide trailing
+  exit_style: trailing
+  name: Conservative ETF
+  parameters:
+    200 DMA: 25
+    50 DMA: 10
+    ADX: 10
+    ATR: 5
+    Drawdown: 10
+    MACD: 10
+    RSI: 10
+    Relative Strength: 10
+    VIX: 5
+    Volume Spike: 5
+  use_case: Long-term ETF investing
+- description: 3-10 day swing trades
+  exit_style: momentum
+  name: Swing Stocks
+  parameters:
+    200 DMA: 15
+    50 DMA: 10
+    ADX: 10
+    ATR: 5
+    Drawdown: 5
+    MACD: 15
+    RSI: 20
+    Relative Strength: 10
+    Volume Spike: 10
+  use_case: Short-term swing trading
+- description: Trending market momentum plays
+  exit_style: momentum
+  name: Momentum
+  parameters:
+    200 DMA: 10
+    50 DMA: 10
+    ADX: 15
+    ATR: 5
+    MACD: 25
+    RSI: 15
+    Relative Strength: 10
+    Volume Spike: 10
+  use_case: Trending markets
+- description: Pullback buying strategy
+  exit_style: trailing
+  name: Mean Reversion
+  parameters:
+    200 DMA: 15
+    50 DMA: 10
+    ADX: 5
+    ATR: 10
+    Drawdown: 10
+    MACD: 5
+    RSI: 30
+    Relative Strength: 10
+    Volume Spike: 5
+  use_case: Pullback buying
