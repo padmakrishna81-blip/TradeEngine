@@ -31,6 +31,15 @@ def main():
     # DB must be ready before auth (login queries app_user table)
     init_db(settings.database.path)
 
+    # Seed the admin user immediately so login works on first boot
+    from state_quant_engine.database.connection import get_session
+    from state_quant_engine.repositories.user_repository import UserRepository
+    _s = get_session()
+    try:
+        UserRepository(_s).seed_admin()
+    finally:
+        _s.close()
+
     if not check_auth():
         return
 
