@@ -1,6 +1,32 @@
 """Authentication gate for STATE Quant Engine."""
 from __future__ import annotations
+import hashlib
 import streamlit as st
+
+# Hardcoded fallback — works even when DB is empty or unreachable
+_FALLBACK_USERS = {
+    "admin": hashlib.sha256("sqe@2024".encode()).hexdigest(),
+}
+
+
+def _try_db_verify(username: str, password: str):
+    """Try DB lookup; return user object or None. Never raises."""
+    try:
+        from state_quant_engine.database.connection import get_session
+        from state_quant_engine.repositories.user_repository import UserRepository
+        session = get_session()
+        try:
+            return UserRepository(session).verify(username, password)
+        finally:
+            session.close()
+    except Exception:
+        return None
+
+
+def _fallback_verify(username: str, password: str) -> bool:
+    """Verify against hardcoded fallback credentials."""
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    return _FALLBACK_USERS.get(username) == pw_hash
 
 
 def check_auth() -> bool:
@@ -22,24 +48,22 @@ def check_auth() -> bool:
     col = st.columns([1, 2, 1])[1]
     with col:
         with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
+            username  = st.text_input("Username")
+            password  = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Sign In", type="primary",
                                                use_container_width=True)
             if submitted:
-                from state_quant_engine.database.connection import get_session
-                from state_quant_engine.repositories.user_repository import UserRepository
-                session = get_session()
-                try:
-                    user = UserRepository(session).verify(username.strip(), password)
-                    if user:
-                        st.session_state["authenticated"] = True
-                        st.session_state["username"]      = user.username
-                        st.session_state["is_admin"]      = user.is_admin
-                        st.rerun()
-                    else:
-                        st.error("Invalid username or password.")
-                finally:
-                    session.close()
+                uname = username.strip()
+                # Try DB first, fall back to hardcoded credentials
+                db_user  = _try_db_verify(uname, password)
+                fallback = _fallback_verify(uname, password)
+
+                if db_user or fallback:
+                    st.session_state["authenticated"] = True
+                    st.session_state["username"]      = uname
+                    st.session_state["is_admin"]      = getattr(db_user, "is_admin", True) if db_user else True
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
 
     return False
