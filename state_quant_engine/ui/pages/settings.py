@@ -13,20 +13,24 @@ from state_quant_engine.config.settings import _MODULE_DIR
 def _save_yaml(updates: dict) -> None:
     """Deep-merge `updates` dict into the YAML config file and re-read settings."""
     yaml_path = os.path.join(_MODULE_DIR, "default.yaml")
-    with open(yaml_path, "r") as f:
-        raw = yaml.safe_load(f) or {}
+    try:
+        with open(yaml_path, "r") as f:
+            raw = yaml.safe_load(f) or {}
 
-    def deep_merge(base: dict, patch: dict) -> dict:
-        for k, v in patch.items():
-            if isinstance(v, dict) and isinstance(base.get(k), dict):
-                deep_merge(base[k], v)
-            else:
-                base[k] = v
-        return base
+        def deep_merge(base: dict, patch: dict) -> dict:
+            for k, v in patch.items():
+                if isinstance(v, dict) and isinstance(base.get(k), dict):
+                    deep_merge(base[k], v)
+                else:
+                    base[k] = v
+            return base
 
-    deep_merge(raw, updates)
-    with open(yaml_path, "w") as f:
-        yaml.dump(raw, f, default_flow_style=False, allow_unicode=True)
+        deep_merge(raw, updates)
+        with open(yaml_path, "w") as f:
+            yaml.dump(raw, f, default_flow_style=False, allow_unicode=True)
+    except OSError:
+        # On Streamlit Cloud the source directory is read-only — silently skip
+        pass
 
 
 def render(settings: Any, version_id: int = 1) -> None:
