@@ -17,9 +17,10 @@ env/
 data/
 logs/
 
-# Secrets / environment
+# Secrets
 .env
 .env.*
+.streamlit/secrets.toml
 
 # OS
 .DS_Store

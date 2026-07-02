@@ -101,7 +101,11 @@ def render_navigation(app_settings: Any) -> None:
             label_visibility="collapsed",
         )
         st.divider()
-        st.caption(f"v{app_settings.app.version}")
+        username = st.session_state.get("username", "")
+        st.caption(f"👤 {username}  ·  v{app_settings.app.version}")
+        if st.button("Sign Out", type="secondary", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
 
     version_id = st.session_state.version_id
     page_module = PAGES[selection]
