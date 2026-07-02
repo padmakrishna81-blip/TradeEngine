@@ -10,6 +10,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from state_quant_engine.models.base import Base
 
 
+class AppUser(Base):
+    """Application users for login."""
+    __tablename__ = "app_user"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[date] = mapped_column(Date, default=date.today)
+
+    def __repr__(self) -> str:
+        return f"<AppUser {self.username}>"
+
+
 class SymbolAllocation(Base):
     """Per-symbol capital allocation percentage within ETF or Stock pool."""
     __tablename__ = "symbol_allocation"

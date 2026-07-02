@@ -1,26 +1,6 @@
 """Authentication gate for STATE Quant Engine."""
 from __future__ import annotations
-import hashlib
 import streamlit as st
-
-
-def _hash(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
-
-def _load_users() -> dict:
-    """Load users from Streamlit secrets or fall back to a default."""
-    try:
-        users = dict(st.secrets.get("users", {}))
-        if users:
-            return users
-    except Exception:
-        pass
-    # Default credential when no secrets are configured
-    # username: admin  password: sqe@2024
-    return {
-        "admin": "62a58963e94473ed83020b67aff0acf76338c53839185d31ee1ee6dd306dc79b"
-    }
 
 
 def check_auth() -> bool:
@@ -47,13 +27,19 @@ def check_auth() -> bool:
             submitted = st.form_submit_button("Sign In", type="primary",
                                                use_container_width=True)
             if submitted:
-                users = _load_users()
-                pw_hash = _hash(password)
-                if username in users and users[username] == pw_hash:
-                    st.session_state["authenticated"] = True
-                    st.session_state["username"] = username
-                    st.rerun()
-                else:
-                    st.error("Invalid username or password.")
+                from state_quant_engine.database.connection import get_session
+                from state_quant_engine.repositories.user_repository import UserRepository
+                session = get_session()
+                try:
+                    user = UserRepository(session).verify(username.strip(), password)
+                    if user:
+                        st.session_state["authenticated"] = True
+                        st.session_state["username"]      = user.username
+                        st.session_state["is_admin"]      = user.is_admin
+                        st.rerun()
+                    else:
+                        st.error("Invalid username or password.")
+                finally:
+                    session.close()
 
     return False

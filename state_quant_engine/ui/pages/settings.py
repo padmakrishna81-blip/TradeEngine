@@ -37,8 +37,8 @@ def render(settings: Any, version_id: int = 1) -> None:
     st.title("Settings")
     st.caption("Application configuration")
 
-    tab_general, tab_capital, tab_alloc, tab_data, tab_advanced = st.tabs(
-        ["General", "Capital & Profit", "Symbol Allocation", "Data", "Advanced"]
+    tab_general, tab_capital, tab_alloc, tab_data, tab_advanced, tab_users = st.tabs(
+        ["General", "Capital & Profit", "Symbol Allocation", "Data", "Advanced", "Users"]
     )
 
     with tab_general:
@@ -335,3 +335,81 @@ def render(settings: Any, version_id: int = 1) -> None:
             st.code("".join(last_lines), language="text")
         else:
             st.info("No log file found yet.")
+
+    # ── Users tab ─────────────────────────────────────────────────────────
+    with tab_users:
+        is_admin = st.session_state.get("is_admin", False)
+        current_user = st.session_state.get("username", "")
+
+        st.subheader("User Management")
+
+        from state_quant_engine.database.connection import get_session
+        from state_quant_engine.repositories.user_repository import UserRepository
+
+        session = get_session()
+        try:
+            user_repo = UserRepository(session)
+            all_users = user_repo.get_all()
+
+            # Show all users (admin sees everyone; others see only themselves)
+            if is_admin:
+                st.caption(f"{len(all_users)} user(s) registered")
+                user_data = [{"Username": u.username, "Admin": u.is_admin,
+                              "Created": str(u.created_at)} for u in all_users]
+                st.dataframe(pd.DataFrame(user_data), use_container_width=True, hide_index=True)
+                st.divider()
+            else:
+                st.info("Only admins can manage users. You can change your own password below.")
+
+            # Change own password
+            st.subheader("Change Password")
+            with st.form("change_pw_form"):
+                old_pw  = st.text_input("Current Password", type="password")
+                new_pw  = st.text_input("New Password", type="password")
+                new_pw2 = st.text_input("Confirm New Password", type="password")
+                if st.form_submit_button("Change Password", type="primary"):
+                    if not user_repo.verify(current_user, old_pw):
+                        st.error("Current password is incorrect.")
+                    elif new_pw != new_pw2:
+                        st.error("New passwords do not match.")
+                    elif len(new_pw) < 6:
+                        st.error("Password must be at least 6 characters.")
+                    else:
+                        user_repo.change_password(current_user, new_pw)
+                        st.success("Password changed successfully.")
+
+            # Admin-only: create new user / delete user
+            if is_admin:
+                st.divider()
+                st.subheader("Add New User")
+                with st.form("add_user_form"):
+                    new_username = st.text_input("Username")
+                    new_password = st.text_input("Password", type="password")
+                    new_is_admin = st.checkbox("Admin privileges")
+                    if st.form_submit_button("Create User", type="primary"):
+                        if not new_username.strip():
+                            st.error("Username is required.")
+                        elif user_repo.get_by_username(new_username.strip()):
+                            st.error(f"User '{new_username}' already exists.")
+                        elif len(new_password) < 6:
+                            st.error("Password must be at least 6 characters.")
+                        else:
+                            user_repo.create_user(new_username.strip(), new_password, new_is_admin)
+                            st.success(f"User '{new_username}' created.")
+                            st.rerun()
+
+                st.divider()
+                st.subheader("Delete User")
+                deletable = [u.username for u in all_users if u.username != current_user]
+                if deletable:
+                    del_user = st.selectbox("Select user to delete", deletable)
+                    if st.button("Delete User", type="secondary"):
+                        u = user_repo.get_by_username(del_user)
+                        if u:
+                            user_repo.delete(u)
+                            st.success(f"User '{del_user}' deleted.")
+                            st.rerun()
+                else:
+                    st.caption("No other users to delete.")
+        finally:
+            session.close()

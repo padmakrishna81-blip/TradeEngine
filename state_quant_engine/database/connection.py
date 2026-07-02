@@ -5,6 +5,8 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.engine import Engine
 from state_quant_engine.models.base import Base
+# Import ALL models so Base.metadata knows every table before create_all
+import state_quant_engine.models.orm_models  # noqa: F401
 from loguru import logger
 
 

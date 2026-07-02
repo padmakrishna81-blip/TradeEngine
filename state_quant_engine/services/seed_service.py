@@ -19,6 +19,7 @@ def seed_defaults(settings: Any) -> None:
         _seed_health_parameters(session, settings)
         _seed_watchlist(session, settings)
         _seed_strategies(session, settings)
+        _seed_admin_user(session)
         _load_symbol_allocations(session, settings)
     finally:
         session.close()
@@ -27,6 +28,11 @@ def seed_defaults(settings: Any) -> None:
 def _seed_live_version(session) -> None:
     repo = VersionRepository(session)
     repo.seed_live()
+
+
+def _seed_admin_user(session) -> None:
+    from state_quant_engine.repositories.user_repository import UserRepository
+    UserRepository(session).seed_admin()
 
 
 def _seed_watchlist_groups(session) -> None:

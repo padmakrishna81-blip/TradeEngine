@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
-# set_page_config MUST be the first Streamlit call — do it here unconditionally
 st.set_page_config(
     page_title="STATE Quant Engine",
     page_icon="📈",
@@ -22,10 +21,6 @@ from state_quant_engine.ui.navigation import render_navigation
 
 
 def main():
-    """Main application entry point."""
-    if not check_auth():
-        return
-
     settings = Settings()
     setup_logging(
         log_path=settings.logging.path,
@@ -33,7 +28,12 @@ def main():
         rotation=settings.logging.rotation,
         retention=settings.logging.retention,
     )
+    # DB must be ready before auth (login queries app_user table)
     init_db(settings.database.path)
+
+    if not check_auth():
+        return
+
     render_navigation(settings)
 
 
