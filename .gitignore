@@ -30,9 +30,6 @@ Thumbs.db
 .vscode/
 *.swp
 
-# Streamlit
-.streamlit/
-
 # Pytest
 .pytest_cache/
 htmlcov/
