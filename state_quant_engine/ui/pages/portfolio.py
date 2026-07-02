@@ -4,9 +4,11 @@ from typing import Any
 import streamlit as st
 import pandas as pd
 from state_quant_engine.services.portfolio_service import (
-    PortfolioService, compute_exit_signal,
-    _SIG_COLORS, _SIG_PARTIAL_EXIT, _SIG_FULL_EXIT,
+    PortfolioService,
+    _SIG_COLORS, _ACT_EXIT, _ACT_AVG, _ACT_HOLD,
 )
+_SIG_PARTIAL_EXIT = _ACT_EXIT   # backward compat for expander button check
+_SIG_FULL_EXIT    = _ACT_EXIT
 
 _TREND_STYLE = {
     "Bullish": {"bg": "#00C853", "fg": "#000"},
@@ -90,11 +92,12 @@ def render(settings: Any, version_id: int = 1) -> None:
         st.info("No open positions. Open positions via Scanner quick-trade or Trade Engine.")
         return
 
-    pm = settings.profit_management
+    rules = settings.portfolio_rules
     st.caption(
-        f"Profit threshold **{pm.profit_threshold:.0f}%** · "
-        f"Strong Hold: health ≥ **{pm.strong_hold_health_min:.0f}%** + **{pm.strong_hold_trend}** trend · "
-        f"Click **Analyse** to populate Signal / Trend / Risk columns."
+        f"Exit threshold: health < **{rules.hold_health_exit_threshold:.0f}%** · "
+        f"AVG threshold: health ≥ **{rules.avg_health_min:.0f}%** · "
+        f"Hard stop: Stocks **{rules.hard_stop_stock:.0f}%** / ETFs **{rules.hard_stop_etf:.0f}%** · "
+        f"Signals auto-computed from Hold Health. **HOLD** = keep · **AVG** = buy next chunk · **EXIT** = close."
     )
 
     # ── Signal legend ─────────────────────────────────────────────────────

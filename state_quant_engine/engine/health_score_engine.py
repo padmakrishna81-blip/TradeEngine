@@ -1,327 +1,324 @@
-"""Dual health score engine — Stock Health + Market Health (separate, independent)."""
+"""
+Dual health score engines:
+  EntryHealthEngine  — for scanner, decides BUY / WAIT on fresh positions
+  HoldHealthEngine   — for portfolio, feeds EXIT / AVG / HOLD decision
+
+Both use the same 6 parameters with different contribution rules per spec.
+"""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Any
 from state_quant_engine.engine.indicators.technical import IndicatorResult
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared result dataclass
+# Shared result
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class HealthScoreResult:
-    """Result of a health score computation (stock OR market)."""
     symbol: str
     score: float = 0.0
     max_score: float = 100.0
-    recommendation: str = "WATCH"
+    recommendation: str = "WAIT"
     reasons: List[str] = field(default_factory=list)
     component_scores: Dict[str, float] = field(default_factory=dict)
+    contributions: Dict[str, float] = field(default_factory=dict)  # 0.0–1.0 per param
 
     @property
     def score_pct(self) -> float:
         return (self.score / self.max_score * 100) if self.max_score > 0 else 0.0
 
 
-@dataclass
-class MarketHealthResult:
-    """Result of the Market Health Score computation."""
-    score_pct: float = 0.0
-    deploy_pct: float = 100.0   # capital deployment multiplier (0-100)
-    deploy_label: str = "Full Deploy"
-    component_scores: Dict[str, float] = field(default_factory=dict)
-    reasons: List[str] = field(default_factory=list)
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry contribution functions  (spec §6.1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _entry_200dma(ind: IndicatorResult) -> tuple[float, str]:
+    p = ind.pct_from_200dma
+    if p >= 8:    return 1.00, f"200DMA: +{p:.1f}% above (strong trend)"
+    if p >= 4:    return 0.85, f"200DMA: +{p:.1f}% above (good)"
+    if p >= 0:    return 0.65, f"200DMA: +{p:.1f}% above (marginal)"
+    if p >= -3:   return 0.25, f"200DMA: {p:.1f}% below (weak)"
+    return 0.00,               f"200DMA: {p:.1f}% below (broken)"
+
+
+def _entry_drawdown(ind: IndicatorResult) -> tuple[float, str]:
+    d = ind.drawdown_pct   # negative
+    if d >= -2:   return 0.20, f"Drawdown {d:.1f}%: near highs, wait for pullback"
+    if d >= -5:   return 0.70, f"Drawdown {d:.1f}%: mild pullback"
+    if d >= -8:   return 1.00, f"Drawdown {d:.1f}%: ideal healthy pullback ✓"
+    if d >= -12:  return 0.75, f"Drawdown {d:.1f}%: moderate pullback"
+    if d >= -15:  return 0.35, f"Drawdown {d:.1f}%: deep pullback, caution"
+    return 0.00,               f"Drawdown {d:.1f}%: excessive, possible breakdown"
+
+
+def _entry_rs(ind: IndicatorResult) -> tuple[float, str]:
+    r = ind.rs_diff_20
+    if r >= 5:    return 1.00, f"RS: +{r:.1f}% vs Nifty (strong leader)"
+    if r >= 2:    return 0.80, f"RS: +{r:.1f}% vs Nifty (outperforming)"
+    if r >= 0:    return 0.60, f"RS: {r:.1f}% vs Nifty (in-line)"
+    if r >= -2:   return 0.25, f"RS: {r:.1f}% vs Nifty (lagging)"
+    return 0.00,               f"RS: {r:.1f}% vs Nifty (underperforming)"
+
+
+def _entry_volume(ind: IndicatorResult) -> tuple[float, str]:
+    v = ind.volume_ratio
+    if v >= 2.0:  return 1.00, f"Volume {v:.2f}x avg (strong interest)"
+    if v >= 1.5:  return 0.85, f"Volume {v:.2f}x avg (above avg)"
+    if v >= 1.2:  return 0.65, f"Volume {v:.2f}x avg (moderate)"
+    if v >= 1.0:  return 0.35, f"Volume {v:.2f}x avg (light)"
+    return 0.00,               f"Volume {v:.2f}x avg (below avg)"
+
+
+def _entry_rsi(ind: IndicatorResult) -> tuple[float, str]:
+    r = ind.rsi14
+    if 48 <= r <= 60: return 1.00, f"RSI {r:.1f}: ideal bullish recovery zone"
+    if 40 <= r < 48:  return 0.85, f"RSI {r:.1f}: recovering from oversold"
+    if 60 < r <= 68:  return 0.70, f"RSI {r:.1f}: bullish but extended"
+    if 35 <= r < 40:  return 0.55, f"RSI {r:.1f}: oversold, watch for turn"
+    if 68 < r <= 75:  return 0.35, f"RSI {r:.1f}: overbought zone"
+    if r < 35:        return 0.15, f"RSI {r:.1f}: deep oversold"
+    return 0.10,                   f"RSI {r:.1f}: extreme overbought"
+
+
+def _entry_macd(ind: IndicatorResult) -> tuple[float, str]:
+    above = ind.macd_line > ind.macd_signal
+    slope = ind.macd_hist_slope
+    near_cross = abs(ind.macd_line - ind.macd_signal) < abs(ind.macd_line) * 0.1 + 0.0001
+
+    if above and slope > 0:
+        return 1.00, "MACD: bullish and histogram rising"
+    if above and slope >= 0:
+        return 0.75, "MACD: bullish, histogram flat"
+    if near_cross and not above:
+        return 0.55, "MACD: near bullish crossover"
+    if not above and slope > 0:
+        return 0.25, "MACD: below signal but improving"
+    return 0.00, "MACD: bearish and weakening"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Bell-curve drawdown scorer
+# Hold contribution functions  (spec §9)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _bell_drawdown_score(drawdown_pct: float, weight: float) -> Tuple[float, str]:
+def _hold_200dma(ind: IndicatorResult) -> tuple[float, str]:
+    p = ind.pct_from_200dma
+    if p >= 5:    return 1.00, f"200DMA: +{p:.1f}% (healthy uptrend)"
+    if p >= 0:    return 0.85, f"200DMA: +{p:.1f}% (still above)"
+    if p >= -3:   return 0.55, f"200DMA: {p:.1f}% (just below, watch)"
+    if p >= -5:   return 0.25, f"200DMA: {p:.1f}% (weakening)"
+    return 0.00,               f"200DMA: {p:.1f}% (broken, below support)"
+
+
+def _hold_drawdown(ind: IndicatorResult) -> tuple[float, str]:
+    d = ind.drawdown_pct
+    if d >= -4:   return 1.00, f"Drawdown {d:.1f}%: near highs, position healthy"
+    if d >= -8:   return 0.80, f"Drawdown {d:.1f}%: moderate pullback"
+    if d >= -12:  return 0.55, f"Drawdown {d:.1f}%: deeper decline"
+    if d >= -15:  return 0.25, f"Drawdown {d:.1f}%: significant decline"
+    return 0.00,               f"Drawdown {d:.1f}%: critical — possible breakdown"
+
+
+def _hold_rs(ind: IndicatorResult) -> tuple[float, str]:
+    r = ind.rs_diff_20
+    if r >= 3:    return 1.00, f"RS: +{r:.1f}% vs Nifty (outperforming)"
+    if r >= 0:    return 0.75, f"RS: {r:.1f}% vs Nifty (in-line)"
+    if r >= -2:   return 0.50, f"RS: {r:.1f}% vs Nifty (slight lag)"
+    if r >= -5:   return 0.20, f"RS: {r:.1f}% vs Nifty (lagging)"
+    return 0.00,               f"RS: {r:.1f}% vs Nifty (significantly underperforming)"
+
+
+def _hold_volume(ind: IndicatorResult) -> tuple[float, str]:
+    v = ind.volume_ratio
+    if v >= 1.2:  return 1.00, f"Volume {v:.2f}x avg"
+    if v >= 1.0:  return 0.75, f"Volume {v:.2f}x avg (normal)"
+    if v >= 0.8:  return 0.50, f"Volume {v:.2f}x avg (below normal)"
+    if v >= 0.6:  return 0.25, f"Volume {v:.2f}x avg (low)"
+    return 0.00,               f"Volume {v:.2f}x avg (very thin)"
+
+
+def _hold_rsi(ind: IndicatorResult) -> tuple[float, str]:
+    r = ind.rsi14
+    if 45 <= r <= 70: return 1.00, f"RSI {r:.1f}: healthy hold zone"
+    if 40 <= r < 45:  return 0.75, f"RSI {r:.1f}: weakening momentum"
+    if 35 <= r < 40:  return 0.50, f"RSI {r:.1f}: oversold territory"
+    if 30 <= r < 35:  return 0.20, f"RSI {r:.1f}: deeply oversold"
+    return 0.00,                   f"RSI {r:.1f}: extreme weakness"
+
+
+def _hold_macd(ind: IndicatorResult) -> tuple[float, str]:
+    above = ind.macd_line > ind.macd_signal
+    slope = ind.macd_hist_slope
+    if above and slope >= 0:
+        return 1.00, "MACD: bullish, histogram stable/rising"
+    if above and slope < 0:
+        return 0.75, "MACD: bullish but histogram weakening"
+    near_cross = abs(ind.macd_line - ind.macd_signal) < abs(ind.macd_line) * 0.1 + 0.0001
+    if near_cross:
+        return 0.50, "MACD: near crossover"
+    if not above and slope > 0:
+        return 0.25, "MACD: below signal, mild weakness"
+    return 0.00, "MACD: bearish, histogram falling"
+
+
+def _hold_profit(ind: IndicatorResult, threshold: float, profit_pct: float = 0.0) -> tuple[float, str]:
     """
-    Bell-shaped scoring for drawdown from swing high:
-      0–2%   → 0   (too expensive / extended)
-      2–5%   → weight × 0.5  (mild pullback)
-      5–8%   → weight × 1.0  (ideal healthy pullback)
-      8–12%  → weight × 0.75 (deeper but ok)
-      12–15% → weight × 0.25 (caution zone)
-      > 15%  → 0   (possible trend damage)
-    Note: drawdown_pct is NEGATIVE (e.g. -6 means 6% below swing high).
+    Profit % contribution for hold health.
+    threshold = profit % at which contribution reaches 1.0.
+    Below 0%  → 0.0 (loss hurts hold health)
+    0-threshold → linear ramp 0→1.0
+    Above threshold → 1.0 (but high profit combined with weak other params → exit)
     """
-    dd = abs(drawdown_pct)   # work with positive magnitude
-
-    if dd < 2:
-        return 0.0, f"Drawdown {dd:.1f}% — too extended, no pullback"
-    elif dd < 5:
-        earned = weight * 0.5
-        return earned, f"Drawdown {dd:.1f}% — mild pullback (50% score)"
-    elif dd < 8:
-        return weight, f"Drawdown {dd:.1f}% — ideal healthy pullback (full score)"
-    elif dd < 12:
-        earned = weight * 0.75
-        return earned, f"Drawdown {dd:.1f}% — moderate pullback (75% score)"
-    elif dd <= 15:
-        earned = weight * 0.25
-        return earned, f"Drawdown {dd:.1f}% — deep pullback, caution (25% score)"
-    else:
-        return 0.0, f"Drawdown {dd:.1f}% — exceeds 15%, possible trend damage"
+    if profit_pct < 0:
+        # Loss — scale penalty 0 at 0% to 0 at -threshold (clamp)
+        return max(0.0, 1.0 + profit_pct / threshold) if threshold > 0 else 0.0, \
+               f"Profit {profit_pct:.1f}%: in loss (reduces hold score)"
+    contribution = min(profit_pct / threshold, 1.0) if threshold > 0 else 0.0
+    label = (f"Profit {profit_pct:.1f}% ≥ {threshold:.0f}% target"
+             if profit_pct >= threshold
+             else f"Profit {profit_pct:.1f}% / {threshold:.0f}% target ({contribution*100:.0f}%)")
+    return contribution, label
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stock-level checkers  (6 parameters)
-# ─────────────────────────────────────────────────────────────────────────────
+# Maps param name → (entry_fn, hold_fn)
+_ENTRY_FNS = {
+    "200 DMA":           _entry_200dma,
+    "Drawdown":          _entry_drawdown,
+    "Relative Strength": _entry_rs,
+    "Volume Spike":      _entry_volume,
+    "RSI":               _entry_rsi,
+    "MACD":              _entry_macd,
+}
+_HOLD_FNS = {
+    "200 DMA":           _hold_200dma,
+    "Drawdown":          _hold_drawdown,
+    "Relative Strength": _hold_rs,
+    "Volume Spike":      _hold_volume,
+    "RSI":               _hold_rsi,
+    "MACD":              _hold_macd,
+    "Profit %":          None,   # handled specially — needs profit_pct arg
+}
 
-def _stock_200dma(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    if ind.price > ind.ema200:
-        return weight, f"Price ₹{ind.price:.1f} above 200 EMA ₹{ind.ema200:.1f}"
-    return 0.0, f"Price ₹{ind.price:.1f} below 200 EMA ₹{ind.ema200:.1f}"
-
-
-def _stock_drawdown(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    return _bell_drawdown_score(ind.drawdown_pct, weight)
-
-
-def _stock_relative_strength(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    if ind.relative_strength >= threshold:
-        return weight, f"RS {ind.relative_strength:.2f} ≥ {threshold:.1f} vs NIFTY (outperforming)"
-    return 0.0, f"RS {ind.relative_strength:.2f} < {threshold:.1f} vs NIFTY (underperforming)"
-
-
-def _stock_volume_spike(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    if ind.volume_ratio >= threshold:
-        return weight, f"Volume {ind.volume_ratio:.2f}× avg (buying interest)"
-    return 0.0, f"Volume {ind.volume_ratio:.2f}× avg (weak participation)"
-
-
-def _stock_rsi(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    if ind.rsi14 >= threshold:
-        return weight, f"RSI {ind.rsi14:.1f} ≥ {threshold:.0f} (bullish momentum)"
-    return 0.0, f"RSI {ind.rsi14:.1f} < {threshold:.0f} (weak momentum)"
-
-
-def _stock_macd(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    if ind.macd_line > ind.macd_signal:
-        return weight, f"MACD bullish cross (line {ind.macd_line:.4f} > signal {ind.macd_signal:.4f})"
-    return 0.0, f"MACD bearish (line {ind.macd_line:.4f} < signal {ind.macd_signal:.4f})"
-
-
-# Legacy checkers kept for backward-compat with custom strategies
-def _check_50dma(ind, threshold, weight):
-    if ind.price > ind.ema50:
-        return weight, f"Price {ind.price:.1f} above 50 EMA {ind.ema50:.1f}"
-    return 0.0, f"Price {ind.price:.1f} below 50 EMA {ind.ema50:.1f}"
-
-
-def _check_adx(ind, threshold, weight):
-    if ind.adx14 >= threshold:
-        return weight, f"ADX {ind.adx14:.1f} above {threshold:.0f} (trending)"
-    return 0.0, f"ADX {ind.adx14:.1f} below {threshold:.0f} (ranging)"
-
-
-def _check_atr(ind, threshold, weight):
-    atr_pct = (ind.atr14 / ind.price * 100) if ind.price > 0 else 0
-    if atr_pct < 3.0:
-        return weight, f"ATR {atr_pct:.1f}% — low volatility"
-    return weight * 0.5, f"ATR {atr_pct:.1f}% — elevated volatility"
-
-
-_STOCK_CHECKERS = {
-    "200 DMA":          _stock_200dma,
-    "Drawdown":         _stock_drawdown,
-    "Relative Strength": _stock_relative_strength,
-    "Volume Spike":     _stock_volume_spike,
-    "RSI":              _stock_rsi,
-    "MACD":             _stock_macd,
-    # legacy / strategy-lab extras
-    "50 DMA":           _check_50dma,
-    "ADX":              _check_adx,
-    "ATR":              _check_atr,
+# Default weights per spec §6 / §8
+_DEFAULT_WEIGHTS = {
+    "200 DMA":           25,
+    "Drawdown":          20,
+    "Relative Strength": 20,
+    "Volume Spike":      10,
+    "RSI":               15,
+    "MACD":              10,
 }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Market-level checkers  (3 parameters)
-# ─────────────────────────────────────────────────────────────────────────────
+def _compute_health(ind: IndicatorResult, fn_map: dict, params: List[Dict],
+                    profit_pct: float = 0.0) -> HealthScoreResult:
+    result = HealthScoreResult(symbol=ind.symbol)
+    if not ind.is_valid:
+        result.recommendation = "ERROR"
+        result.reasons.append(ind.error or "Invalid data")
+        return result
 
-def _market_vix(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    """Score VIX: lower is better. Graduated scoring."""
-    v = ind.vix
-    if v <= 13:
-        return weight, f"VIX {v:.1f} — very low fear, risk-on"
-    elif v <= 16:
-        return weight * 0.85, f"VIX {v:.1f} — calm market (85% score)"
-    elif v <= 20:
-        return weight * 0.65, f"VIX {v:.1f} — mild anxiety (65% score)"
-    elif v <= 25:
-        return weight * 0.35, f"VIX {v:.1f} — elevated fear (35% score)"
-    else:
-        return 0.0, f"VIX {v:.1f} — high fear, caution"
+    total_weight = 0.0
+    weighted_sum = 0.0
 
+    for param in params:
+        name      = param.get("parameter_name") or param.get("name", "")
+        weight    = float(param.get("weight", _DEFAULT_WEIGHTS.get(name, 0)))
+        enabled   = param.get("enabled", True)
+        threshold = float(param.get("threshold", 0))
+        if not enabled or weight <= 0:
+            continue
 
-def _market_breadth(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    """Score market breadth (0-1 fraction of stocks above 200 EMA)."""
-    b = ind.breadth
-    if b >= 0.70:
-        return weight, f"Breadth {b:.0%} — broad participation (full score)"
-    elif b >= 0.55:
-        return weight * 0.75, f"Breadth {b:.0%} — decent breadth (75%)"
-    elif b >= 0.40:
-        return weight * 0.40, f"Breadth {b:.0%} — narrow market (40%)"
-    else:
-        return 0.0, f"Breadth {b:.0%} — very narrow, weak internals"
+        if name == "Profit %":
+            contribution, reason = _hold_profit(ind, threshold, profit_pct)
+        else:
+            fn = fn_map.get(name)
+            if not fn:
+                continue
+            contribution, reason = fn(ind)
 
+        total_weight += weight
+        weighted_sum += weight * contribution
+        result.contributions[name] = contribution
+        result.component_scores[name] = round(weight * contribution, 2)
+        result.reasons.append(reason)
 
-def _market_nifty_200dma(ind: IndicatorResult, threshold: float, weight: float) -> Tuple[float, str]:
-    if ind.price > ind.ema200:
-        gap = (ind.price - ind.ema200) / ind.ema200 * 100
-        return weight, f"NIFTY {gap:.1f}% above 200 EMA — uptrend intact"
-    return 0.0, f"NIFTY below 200 EMA — market downtrend"
-
-
-_MARKET_CHECKERS = {
-    "VIX":              _market_vix,
-    "Market Breadth":   _market_breadth,
-    "Nifty 200 DMA":    _market_nifty_200dma,
-}
+    result.max_score = total_weight
+    result.score     = weighted_sum
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stock Health Engine
+# Public engines
 # ─────────────────────────────────────────────────────────────────────────────
 
-class StockHealthEngine:
-    """
-    Scores individual stocks on 6 parameters (total 100 weight).
-    Default: 200DMA(25) + Drawdown(20) + RelStr(20) + VolSpike(15) + RSI(10) + MACD(10)
-    Fully configurable via DB health_parameters (type='stock').
-    """
+class EntryHealthEngine:
+    """Computes Entry Health % and BUY/WAIT signal for scanner (fresh entries only)."""
 
-    def __init__(
-        self,
-        parameters: List[Dict],
-        buy_threshold: float = 70,
-        hold_threshold: float = 50,
-        watch_threshold: float = 35,
-        exit_threshold: float = 35,
-    ) -> None:
-        self.parameters    = parameters
-        self.buy_threshold = buy_threshold
-        self.hold_threshold = hold_threshold
-        self.watch_threshold = watch_threshold
-        self.exit_threshold  = exit_threshold
+    BUY_THRESHOLD = 75.0
+
+    def __init__(self, parameters: List[Dict], buy_threshold: float = BUY_THRESHOLD,
+                 hard_gate_above_200dma: bool = True,
+                 hard_gate_no_strong_bear_macd: bool = True,
+                 hard_gate_max_drawdown: float = -15.0, **_):
+        self.parameters                 = parameters
+        self.buy_threshold              = buy_threshold
+        self.hard_gate_above_200dma     = hard_gate_above_200dma
+        self.hard_gate_no_strong_bear   = hard_gate_no_strong_bear_macd
+        self.hard_gate_max_drawdown     = hard_gate_max_drawdown
 
     def compute(self, ind: IndicatorResult) -> HealthScoreResult:
-        result = HealthScoreResult(symbol=ind.symbol)
-        if not ind.is_valid:
-            result.recommendation = "ERROR"
-            result.reasons.append(ind.error or "Invalid indicator data")
-            return result
+        result = _compute_health(ind, _ENTRY_FNS, self.parameters)
 
-        total, max_score = 0.0, 0.0
-        for param in self.parameters:
-            name      = param.get("parameter_name") or param.get("name", "")
-            weight    = float(param.get("weight", 0))
-            enabled   = param.get("enabled", True)
-            threshold = float(param.get("threshold", 0))
-            if not enabled or weight <= 0:
-                continue
-            max_score += weight
-            checker = _STOCK_CHECKERS.get(name)
-            if checker:
-                earned, reason = checker(ind, threshold, weight)
-                total += earned
-                result.component_scores[name] = earned
-                result.reasons.append(reason)
-            else:
-                result.component_scores[name] = 0.0
+        # Hard gates — each is independently configurable
+        hard_gate_fail = None
+        if self.hard_gate_above_200dma and ind.price < ind.ema200:
+            hard_gate_fail = f"Hard gate: price ₹{ind.price:.2f} below 200 DMA ₹{ind.ema200:.2f}"
+        elif self.hard_gate_no_strong_bear and ind.macd_line < ind.macd_signal and ind.macd_hist_slope < 0:
+            hard_gate_fail = "Hard gate: MACD strong bearish"
+        elif ind.drawdown_pct < self.hard_gate_max_drawdown:
+            hard_gate_fail = f"Hard gate: drawdown {ind.drawdown_pct:.1f}% < {self.hard_gate_max_drawdown:.0f}%"
 
-        result.score     = total
-        result.max_score = max_score
-        pct = result.score_pct
-        if pct >= self.buy_threshold:
+        if hard_gate_fail:
+            result.recommendation = "WAIT"
+            result.reasons.insert(0, hard_gate_fail)
+        elif result.score_pct >= self.buy_threshold:
             result.recommendation = "BUY"
-        elif pct >= self.hold_threshold:
-            result.recommendation = "HOLD"
-        elif pct >= self.exit_threshold:
-            result.recommendation = "WATCH"
         else:
-            result.recommendation = "EXIT"
-        return result
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Market Health Engine
-# ─────────────────────────────────────────────────────────────────────────────
-
-_DEFAULT_MARKET_PARAMS = [
-    {"name": "VIX",            "weight": 40, "enabled": True, "threshold": 20},
-    {"name": "Market Breadth", "weight": 40, "enabled": True, "threshold": 0.5},
-    {"name": "Nifty 200 DMA",  "weight": 20, "enabled": True, "threshold": 0},
-]
-
-_DEFAULT_DEPLOY_TIERS = [
-    {"min": 80, "deploy_pct": 100, "label": "Full Deploy"},
-    {"min": 60, "deploy_pct": 75,  "label": "75% Deploy"},
-    {"min": 40, "deploy_pct": 50,  "label": "50% Deploy"},
-    {"min":  0, "deploy_pct": 25,  "label": "25% / Hold Cash"},
-]
-
-
-class MarketHealthEngine:
-    """
-    Scores market conditions on 3 parameters (total 100 weight).
-    Default: VIX(40) + Breadth(40) + Nifty200DMA(20)
-    Output: market score + capital deployment multiplier.
-    """
-
-    def __init__(
-        self,
-        parameters: List[Dict] = None,
-        deploy_tiers: List[Dict] = None,
-    ) -> None:
-        self.parameters   = parameters or _DEFAULT_MARKET_PARAMS
-        self.deploy_tiers = deploy_tiers or _DEFAULT_DEPLOY_TIERS
-
-    def compute(self, nifty_ind: IndicatorResult) -> MarketHealthResult:
-        """
-        nifty_ind: IndicatorResult computed from NIFTY 50 (^NSEI).
-        The vix and breadth fields must be pre-populated on this object.
-        """
-        result = MarketHealthResult()
-        total, max_score = 0.0, 0.0
-
-        for param in self.parameters:
-            name      = param.get("parameter_name") or param.get("name", "")
-            weight    = float(param.get("weight", 0))
-            enabled   = param.get("enabled", True)
-            threshold = float(param.get("threshold", 0))
-            if not enabled or weight <= 0:
-                continue
-            max_score += weight
-            checker = _MARKET_CHECKERS.get(name)
-            if checker:
-                earned, reason = checker(nifty_ind, threshold, weight)
-                total += earned
-                result.component_scores[name] = earned
-                result.reasons.append(reason)
-
-        score_pct = (total / max_score * 100) if max_score > 0 else 0.0
-        result.score_pct = score_pct
-
-        for tier in sorted(self.deploy_tiers, key=lambda t: t["min"], reverse=True):
-            if score_pct >= tier["min"]:
-                result.deploy_pct   = float(tier["deploy_pct"])
-                result.deploy_label = tier["label"]
-                break
+            result.recommendation = "WAIT"
 
         return result
 
 
+class HoldHealthEngine:
+    """Computes Hold Health % for portfolio (existing positions only)."""
+
+    def __init__(self, parameters: List[Dict], **_):
+        self.parameters = parameters
+
+    def compute(self, ind: IndicatorResult, profit_pct: float = 0.0) -> HealthScoreResult:
+        result = _compute_health(ind, _HOLD_FNS, self.parameters, profit_pct=profit_pct)
+        result.recommendation = "HOLD"
+        return result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Backward-compat alias (Strategy Lab and old code used HealthScoreEngine)
+# Backward-compat aliases
 # ─────────────────────────────────────────────────────────────────────────────
 
-class HealthScoreEngine(StockHealthEngine):
-    """Alias for backward compatibility."""
+class StockHealthEngine(EntryHealthEngine):
     pass
+
+class HealthScoreEngine(EntryHealthEngine):
+    pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Market Health Engine (unchanged)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from state_quant_engine.engine.health_score_engine_market import (  # noqa: E402
+    MarketHealthEngine, MarketHealthResult,
+    _DEFAULT_MARKET_PARAMS, _DEFAULT_DEPLOY_TIERS,
+)

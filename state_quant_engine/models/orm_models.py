@@ -57,14 +57,21 @@ class HealthParameter(Base):
     __tablename__ = "health_parameter"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    parameter_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    parameter_name: Mapped[str] = mapped_column(String(100), nullable=False)
     weight: Mapped[float] = mapped_column(Float, default=10.0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     threshold: Mapped[float] = mapped_column(Float, default=0.0)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    scope: Mapped[str] = mapped_column(String(10), default="entry")
+    # scope values: "entry" (scanner), "hold" (portfolio), "both"
+
+    __table_args__ = (
+        __import__("sqlalchemy").UniqueConstraint("parameter_name", "scope",
+                                                  name="uq_health_param_name_scope"),
+    )
 
     def __repr__(self) -> str:
-        return f"<HealthParameter {self.parameter_name} w={self.weight}>"
+        return f"<HealthParameter {self.parameter_name} scope={self.scope} w={self.weight}>"
 
 
 class AssetType(Base):

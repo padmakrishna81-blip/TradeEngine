@@ -8,8 +8,9 @@ from loguru import logger
 from state_quant_engine.engine.indicators.data_fetcher import fetch_ohlcv, fetch_current_price
 from state_quant_engine.engine.indicators.technical import compute_indicators, compute_market_breadth, IndicatorResult
 from state_quant_engine.engine.health_score_engine import (
-    HealthScoreEngine, StockHealthEngine, MarketHealthEngine, HealthScoreResult,
+    EntryHealthEngine, HoldHealthEngine, HealthScoreEngine, HealthScoreResult,
 )
+from state_quant_engine.engine.health_score_engine_market import MarketHealthEngine
 from state_quant_engine.engine.trade_engine import EntryEngine, HoldEngine, ExitEngine, ChunkEngine, TradeSignal
 from state_quant_engine.database.connection import get_session
 from state_quant_engine.repositories.health_parameter_repository import HealthParameterRepository
@@ -57,11 +58,12 @@ class ScannerService:
         self._vix_df: Optional[pd.DataFrame] = None
 
     def _get_stock_parameters(self) -> List[Dict]:
-        """Return stock health parameters from DB (or YAML fallback)."""
+        """Return ENTRY health parameters from DB (scope='entry')."""
         session = get_session()
         try:
-            repo = HealthParameterRepository(session)
-            params = repo.get_enabled()
+            from state_quant_engine.repositories.health_parameter_repository import SCOPE_ENTRY
+            repo   = HealthParameterRepository(session)
+            params = repo.get_enabled_for_entry()
             if params:
                 return [
                     {"parameter_name": p.parameter_name, "weight": p.weight,
@@ -70,9 +72,7 @@ class ScannerService:
                 ]
         finally:
             session.close()
-        # Prefer new stock_health_parameters from YAML, fall back to legacy
-        return (self.settings.stock_health_parameters
-                or self.settings.health_parameters)
+        return (self.settings.stock_health_parameters or self.settings.health_parameters)
 
     def _load_auxiliary(self) -> None:
         """Load benchmark (NIFTY) and VIX data."""
@@ -110,24 +110,32 @@ class ScannerService:
     def run(self, symbols: Optional[List[str]] = None, strategy_params: Optional[List[Dict]] = None,
             drawdown_days: Optional[int] = None, version_id: int = 1,
             watchlist_group_id: Optional[int] = None) -> List[ScanResult]:
-        """Run scan for given symbols or all enabled watchlist items."""
+        """
+        Scanner = fresh entries only.
+        Symbols that already have an OPEN position for this version are excluded —
+        those belong to the Portfolio workflow.
+        Returns only BUY / WAIT recommendations.
+        """
         self._load_auxiliary()
-        stock_params  = strategy_params or self._get_stock_parameters()
-        hs_thresholds = self.settings.health_scores
-        dd_days = drawdown_days if drawdown_days is not None else self.settings.data.drawdown_days
+        stock_params = strategy_params or self._get_stock_parameters()
+        dd_days      = drawdown_days if drawdown_days is not None else self.settings.data.drawdown_days
 
-        health_engine = StockHealthEngine(
+        buy_threshold = getattr(self.settings, "portfolio_rules", None)
+        pr            = buy_threshold  # alias for readability
+        buy_threshold = pr.entry_buy_threshold if pr else 75.0
+
+        health_engine = EntryHealthEngine(
             parameters=stock_params,
-            buy_threshold=hs_thresholds.buy_threshold,
-            hold_threshold=hs_thresholds.hold_threshold,
-            watch_threshold=hs_thresholds.watch_threshold,
-            exit_threshold=hs_thresholds.exit_threshold,
+            buy_threshold=buy_threshold,
+            hard_gate_above_200dma=pr.hard_gate_above_200dma if pr else True,
+            hard_gate_no_strong_bear_macd=pr.hard_gate_no_strong_bear_macd if pr else True,
+            hard_gate_max_drawdown=pr.hard_gate_max_drawdown if pr else -15.0,
         )
         chunk_engine = ChunkEngine(self.settings)
 
         session = get_session()
         try:
-            wl_repo = WatchlistRepository(session)
+            wl_repo  = WatchlistRepository(session)
             pos_repo = PositionRepository(session)
 
             if symbols:
@@ -135,6 +143,10 @@ class ScannerService:
                              if w.symbol in symbols]
             else:
                 watchlist = wl_repo.get_enabled(group_id=watchlist_group_id)
+
+            # SCANNER ONLY handles symbols NOT currently in portfolio for this version
+            open_symbols = {p.symbol for p in pos_repo.get_open_positions(version_id=version_id)}
+            watchlist = [w for w in watchlist if w.symbol not in open_symbols]
 
             breadth_symbols = [w.symbol for w in watchlist]
             breadth_dfs = {sym: fetch_ohlcv(sym, period=self.settings.data.download_period) for sym in breadth_symbols[:20]}

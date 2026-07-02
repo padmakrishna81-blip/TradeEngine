@@ -42,11 +42,12 @@ def _run_migrations(engine: Engine) -> None:
     with engine.connect() as conn:
         text = __import__("sqlalchemy").text
         simple_cols = [
-            ("strategy",     "ALTER TABLE strategy ADD COLUMN drawdown_days INTEGER DEFAULT 52"),
-            ("position",     "ALTER TABLE position ADD COLUMN version_id INTEGER DEFAULT 1"),
-            ("trade_log",    "ALTER TABLE trade_log ADD COLUMN version_id INTEGER DEFAULT 1"),
-            ("scan_history", "ALTER TABLE scan_history ADD COLUMN version_id INTEGER DEFAULT 1"),
-            ("watchlist",    "ALTER TABLE watchlist ADD COLUMN watchlist_group_id INTEGER DEFAULT NULL"),
+            ("strategy",         "ALTER TABLE strategy ADD COLUMN drawdown_days INTEGER DEFAULT 52"),
+            ("position",         "ALTER TABLE position ADD COLUMN version_id INTEGER DEFAULT 1"),
+            ("trade_log",        "ALTER TABLE trade_log ADD COLUMN version_id INTEGER DEFAULT 1"),
+            ("scan_history",     "ALTER TABLE scan_history ADD COLUMN version_id INTEGER DEFAULT 1"),
+            ("watchlist",        "ALTER TABLE watchlist ADD COLUMN watchlist_group_id INTEGER DEFAULT NULL"),
+            ("health_parameter", "ALTER TABLE health_parameter ADD COLUMN scope VARCHAR(10) DEFAULT 'entry'"),
         ]
         for label, sql in simple_cols:
             try:

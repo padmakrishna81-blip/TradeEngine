@@ -41,6 +41,43 @@ def _symbol_allocated_capital(symbol: str, asset_type: str, settings: Any) -> fl
     return total / 5
 
 
+def suggested_buy_quantity(symbol: str, asset_type: str, existing_chunks: int,
+                            price: float, settings: Any) -> int:
+    """
+    Compute the suggested BUY quantity for the next chunk.
+
+    chunk_amount = symbol_capital × chunk_pct[existing_chunks]
+    qty          = floor(chunk_amount / price)
+
+    Returns at least 1.
+    """
+    if price <= 0:
+        return 1
+
+    cap_cfg    = settings.etf_capital if asset_type == "ETF" else settings.stock_capital
+    chunk_pcts = cap_cfg.chunk_percentages
+    chunk_idx  = existing_chunks  # 0-based index for NEXT chunk
+    chunk_pct  = (chunk_pcts[chunk_idx] if chunk_idx < len(chunk_pcts)
+                  else chunk_pcts[-1]) / 100
+
+    symbol_capital = _symbol_allocated_capital(symbol, asset_type, settings)
+    chunk_amount   = symbol_capital * chunk_pct
+
+    # Apply market deploy multiplier if available in session state
+    try:
+        import streamlit as st
+        results = st.session_state.get("scan_results", [])
+        for r in results:
+            if r.symbol == symbol and hasattr(r, "deploy_pct"):
+                chunk_amount *= r.deploy_pct / 100
+                break
+    except Exception:
+        pass
+
+    qty = int(chunk_amount / price)
+    return max(1, qty)
+
+
 class EntryEngine:
     """Decides whether to enter a position."""
 

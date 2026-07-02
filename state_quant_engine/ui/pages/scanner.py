@@ -7,11 +7,9 @@ import plotly.graph_objects as go
 from state_quant_engine.services.scanner_service import ScannerService
 
 _SIGNAL_STYLE = {
-    "BUY":   {"bg": "#00C853", "fg": "#000000"},
-    "HOLD":  {"bg": "#2979FF", "fg": "#FFFFFF"},
-    "WATCH": {"bg": "#FF6D00", "fg": "#FFFFFF"},
-    "EXIT":  {"bg": "#D50000", "fg": "#FFFFFF"},
-    "ERROR": {"bg": "#AA00FF", "fg": "#FFFFFF"},
+    "BUY":  {"bg": "#00C853", "fg": "#000000"},
+    "WAIT": {"bg": "#607D8B", "fg": "#FFFFFF"},
+    "ERROR":{"bg": "#AA00FF", "fg": "#FFFFFF"},
 }
 _TREND_STYLE = {
     "Bullish":  {"bg": "#00C853", "fg": "#000"},
@@ -114,23 +112,21 @@ def render(settings: Any, version_id: int = 1) -> None:
             )
 
     buy   = [r for r in filtered if r.recommendation == "BUY"]
-    hold  = [r for r in filtered if r.recommendation == "HOLD"]
-    watch = [r for r in filtered if r.recommendation == "WATCH"]
-    exit_ = [r for r in filtered if r.recommendation == "EXIT"]
+    wait  = [r for r in filtered if r.recommendation == "WAIT"]
 
-    c1, c2, c3, c4 = st.columns(4)
-    for col, count, label, bg, fg in [
-        (c1, len(buy),   "BUY",   "#00C853", "#000"),
-        (c2, len(hold),  "HOLD",  "#2979FF", "#fff"),
-        (c3, len(watch), "WATCH", "#FF6D00", "#fff"),
-        (c4, len(exit_), "EXIT",  "#D50000", "#fff"),
+    c1, c2 = st.columns(2)
+    for col, items, label, bg, fg in [
+        (c1, buy,  "BUY",  "#00C853", "#000"),
+        (c2, wait, "WAIT", "#607D8B", "#fff"),
     ]:
         col.markdown(
             f'<div style="background:{bg};color:{fg};text-align:center;padding:12px;'
-            f'border-radius:8px;font-weight:700;font-size:1.4em">{count}<br>'
+            f'border-radius:8px;font-weight:700;font-size:1.4em">{len(items)}<br>'
             f'<span style="font-size:0.6em">{label}</span></div>',
             unsafe_allow_html=True,
         )
+
+    st.caption("ℹ️ Scanner shows only fresh entry candidates. Stocks already in your portfolio are shown in the **Portfolio** screen.")
 
     st.divider()
 
@@ -362,26 +358,50 @@ def _render_detail(r):
     st.write("**Quick Trade**")
     version_id = st.session_state.get("version_id", 1)
     ver_name   = st.session_state.get("version_name", "Live")
+    _settings  = st.session_state.get("_settings")
 
+    # Compute suggested BUY quantity from chunk rules
+    sugg_qty   = 1
+    chunk_info = ""
+    if _settings and r.price > 0:
+        try:
+            from state_quant_engine.engine.trade_engine import (
+                suggested_buy_quantity, _symbol_allocated_capital,
+            )
+            asset_type = r.asset_type
+            # Scanner only shows fresh entries (no open position for this symbol)
+            sugg_qty   = suggested_buy_quantity(r.symbol, asset_type, 0, r.price, _settings)
+            cap_cfg    = _settings.etf_capital if asset_type == "ETF" else _settings.stock_capital
+            chunk_pct  = cap_cfg.chunk_percentages[0] if cap_cfg.chunk_percentages else 20
+            sym_cap    = _symbol_allocated_capital(r.symbol, asset_type, _settings)
+            chunk_amt  = sym_cap * chunk_pct / 100
+            # Apply market deploy multiplier if available
+            deploy = r.deploy_pct if hasattr(r, "deploy_pct") and r.deploy_pct else 100.0
+            chunk_amt  *= deploy / 100
+            chunk_info = (f"Chunk 1: ₹{chunk_amt:,.0f} "
+                          f"({chunk_pct:.0f}% of ₹{sym_cap:,.0f}"
+                          + (f", {deploy:.0f}% market deploy" if deploy < 100 else "") + ")")
+        except Exception:
+            pass
+
+    # Scanner = fresh entry → always default BUY
     action_options = ["BUY", "EXIT", "PARTIAL_EXIT"]
-    default_action = "BUY" if r.recommendation in ("BUY", "WATCH") else "EXIT"
 
     with st.form(key=f"scanner_trade_{r.symbol}_{version_id}"):
+        if chunk_info:
+            st.caption(chunk_info)
         col_a, col_q, col_p = st.columns(3)
         with col_a:
-            action = st.selectbox("Action", action_options,
-                                  index=action_options.index(default_action))
+            action = st.selectbox("Action", action_options, index=0)  # BUY always default
         with col_q:
-            qty = st.number_input("Quantity", min_value=1, value=1, step=1)
+            qty = st.number_input("Quantity", min_value=1, value=max(1, sugg_qty), step=1)
         with col_p:
             exec_price = st.number_input("Price", value=float(r.price),
                                           min_value=0.01, step=0.05)
-        remarks = st.text_input("Remarks", value=f"From Scanner — {r.recommendation}")
+        remarks = st.text_input("Remarks", value=f"Chunk 1 — Entry Health {r.score_pct:.0f}%")
         if st.form_submit_button(f"Execute {action} [{ver_name}]", type="primary"):
-            from state_quant_engine.services.portfolio_service import PortfolioService
-            # settings must be passed in; pull from session or use a sentinel
-            _settings = st.session_state.get("_settings")
             if _settings:
+                from state_quant_engine.services.portfolio_service import PortfolioService
                 PortfolioService(_settings).execute_trade(
                     r.symbol, action, exec_price, float(qty), remarks, version_id=version_id
                 )

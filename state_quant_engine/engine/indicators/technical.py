@@ -26,12 +26,15 @@ class IndicatorResult:
     volume_ratio: float = 1.0
     drawdown_pct: float = 0.0
     swing_high: float = 0.0
-    drawdown_days: int = 52
-    prev_close: float = 0.0       # previous session close
-    change_pct: float = 0.0       # (price - prev_close) / prev_close × 100
+    drawdown_days: int = 60          # spec requires 60-day high for drawdown
+    prev_close: float = 0.0
+    change_pct: float = 0.0
     relative_strength: float = 1.0
+    rs_diff_20: float = 0.0          # stock 20-day return minus Nifty 20-day return (%)
+    macd_hist_slope: float = 0.0     # slope of last 3 histogram bars (+ve = rising)
     vix: float = 15.0
     breadth: float = 0.5
+    pct_from_200dma: float = 0.0     # ((close - dma200) / dma200) * 100
     error: Optional[str] = None
 
     @property
@@ -154,20 +157,32 @@ def compute_indicators(df: pd.DataFrame, symbol: str, benchmark_df: Optional[pd.
         result.volume_avg20 = float(vol_avg.iloc[-1]) if not pd.isna(vol_avg.iloc[-1]) else float(volume.mean())
         result.volume_ratio = result.volume / result.volume_avg20 if result.volume_avg20 > 0 else 1.0
 
+        # Drawdown uses spec-defined 60-day window
         swing_window = min(drawdown_days, len(close))
         result.swing_high = float(close.rolling(swing_window).max().iloc[-1])
         result.drawdown_days = drawdown_days
         if result.swing_high > 0:
             result.drawdown_pct = (result.price - result.swing_high) / result.swing_high * 100
 
+        # % distance from 200 DMA
+        if result.ema200 > 0:
+            result.pct_from_200dma = (result.price - result.ema200) / result.ema200 * 100
+
+        # MACD histogram slope (avg of last 3 bars, positive = rising)
+        if len(macd_hist) >= 3:
+            result.macd_hist_slope = float(macd_hist.iloc[-1] - macd_hist.iloc[-3])
+
         if benchmark_df is not None and not benchmark_df.empty and len(benchmark_df) > 1:
             try:
                 bench_close = benchmark_df["close"]
-                sym_ret = close.pct_change(20).iloc[-1]
-                bench_ret = bench_close.pct_change(20).iloc[-1]
-                result.relative_strength = (1 + sym_ret) / (1 + bench_ret) if bench_ret != -1 else 1.0
+                sym_ret_20   = close.pct_change(20).iloc[-1]
+                bench_ret_20 = bench_close.pct_change(20).iloc[-1]
+                result.relative_strength = (1 + sym_ret_20) / (1 + bench_ret_20) if bench_ret_20 != -1 else 1.0
+                # rs_diff_20: stock 20-day % return minus Nifty 20-day % return
+                result.rs_diff_20 = (sym_ret_20 - bench_ret_20) * 100
             except Exception:
                 result.relative_strength = 1.0
+                result.rs_diff_20 = 0.0
 
         if vix_df is not None and not vix_df.empty:
             try:

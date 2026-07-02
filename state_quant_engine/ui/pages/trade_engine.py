@@ -119,12 +119,33 @@ def render(settings: Any, version_id: int = 1) -> None:
 
             st.divider()
             st.subheader("Execute Trade")
+
+            # Derive smart defaults
+            from state_quant_engine.engine.trade_engine import suggested_buy_quantity
+            default_action = "BUY" if entry_signal.action == "BUY" else "EXIT" if open_positions else "BUY"
+            actions = ["BUY", "EXIT", "PARTIAL_EXIT"]
+
             col_act, col_qty, col_price = st.columns(3)
             with col_act:
-                action = st.selectbox("Action", ["BUY", "EXIT", "PARTIAL_EXIT"])
+                action = st.selectbox("Action", actions,
+                                      index=actions.index(default_action))
             with col_qty:
-                if entry_signal.action == "BUY":
-                    default_qty = max(1, int(entry_signal.quantity))
+                if action == "BUY":
+                    # Suggested quantity based on chunk size and remaining capital
+                    sugg_qty = suggested_buy_quantity(
+                        selected, wl_item.asset_type, chunks_held,
+                        float(ind.price), settings,
+                    )
+                    # Show the chunk amount for clarity
+                    cap_cfg    = settings.etf_capital if wl_item.asset_type == "ETF" else settings.stock_capital
+                    chunk_pcts = cap_cfg.chunk_percentages
+                    chunk_idx  = chunks_held
+                    chunk_pct  = (chunk_pcts[chunk_idx] if chunk_idx < len(chunk_pcts) else chunk_pcts[-1])
+                    from state_quant_engine.engine.trade_engine import _symbol_allocated_capital
+                    sym_cap    = _symbol_allocated_capital(selected, wl_item.asset_type, settings)
+                    chunk_amt  = sym_cap * chunk_pct / 100
+                    st.caption(f"Chunk {chunks_held+1}: ₹{chunk_amt:,.0f} ({chunk_pct:.0f}% of ₹{sym_cap:,.0f})")
+                    default_qty = sugg_qty
                 else:
                     total_qty   = sum(p.quantity for p in open_positions)
                     default_qty = max(1, int(total_qty))

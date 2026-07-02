@@ -64,6 +64,27 @@ class HealthScoreThresholds:
 
 
 @dataclass
+class PortfolioRulesConfig:
+    hold_health_exit_threshold: float = 45.0
+    avg_health_min: float = 60.0
+    hard_stop_stock: float = -8.0
+    hard_stop_etf: float = -6.0
+    entry_buy_threshold: float = 75.0
+    profit_exit_threshold: float = 10.0   # profit % that triggers exit evaluation
+    profit_exit_weight: float = 20.0      # how much profit contributes to exit score (0-100)
+    # Hard gate toggles for scanner BUY
+    hard_gate_above_200dma: bool = True
+    hard_gate_no_strong_bear_macd: bool = True
+    hard_gate_max_drawdown: float = -15.0
+    trailing_buffers: list = field(default_factory=lambda: [
+        {"min_health": 80, "buffer": 3.0},
+        {"min_health": 65, "buffer": 2.0},
+        {"min_health": 50, "buffer": 1.25},
+        {"min_health": 45, "buffer": 0.75},
+    ])
+
+
+@dataclass
 class ProfitManagementConfig:
     profit_threshold: float = 3.0
     partial_exit_threshold: float = 3.0
@@ -85,6 +106,7 @@ class Settings:
     stock_capital: CapitalConfig = field(default_factory=CapitalConfig)
     health_scores: HealthScoreThresholds = field(default_factory=HealthScoreThresholds)
     profit_management: ProfitManagementConfig = field(default_factory=ProfitManagementConfig)
+    portfolio_rules: PortfolioRulesConfig = field(default_factory=PortfolioRulesConfig)
     health_parameters: List[Dict[str, Any]] = field(default_factory=list)          # legacy / strategy-lab
     stock_health_parameters: List[Dict[str, Any]] = field(default_factory=list)
     market_health_parameters: List[Dict[str, Any]] = field(default_factory=list)
@@ -145,6 +167,21 @@ class Settings:
         if "profit_management" in raw:
             pm = raw["profit_management"]
             self.profit_management = ProfitManagementConfig(**pm)
+        if "portfolio_rules" in raw:
+            pr = raw["portfolio_rules"]
+            self.portfolio_rules = PortfolioRulesConfig(
+                hold_health_exit_threshold=pr.get("hold_health_exit_threshold", 45),
+                avg_health_min=pr.get("avg_health_min", 60),
+                hard_stop_stock=pr.get("hard_stop_stock", -8.0),
+                hard_stop_etf=pr.get("hard_stop_etf", -6.0),
+                entry_buy_threshold=pr.get("entry_buy_threshold", 75),
+                profit_exit_threshold=pr.get("profit_exit_threshold", 10.0),
+                profit_exit_weight=pr.get("profit_exit_weight", 20.0),
+                hard_gate_above_200dma=pr.get("hard_gate_above_200dma", True),
+                hard_gate_no_strong_bear_macd=pr.get("hard_gate_no_strong_bear_macd", True),
+                hard_gate_max_drawdown=pr.get("hard_gate_max_drawdown", -15.0),
+                trailing_buffers=pr.get("trailing_buffers", []),
+            )
         if "health_parameters" in raw:
             self.health_parameters = raw["health_parameters"]
         if "stock_health_parameters" in raw:

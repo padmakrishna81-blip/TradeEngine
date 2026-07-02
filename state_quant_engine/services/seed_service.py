@@ -41,19 +41,52 @@ def _seed_watchlist_groups(session) -> None:
 
 
 def _seed_health_parameters(session, settings) -> None:
+    from state_quant_engine.repositories.health_parameter_repository import (
+        HealthParameterRepository, SCOPE_ENTRY, SCOPE_HOLD,
+    )
     repo = HealthParameterRepository(session)
-    existing = repo.get_all()
-    if existing:
+
+    # Only seed if neither entry nor hold rows exist yet
+    if repo.get_enabled_for_entry() or repo.get_enabled_for_hold():
+        # migrate old rows (no scope column) to entry scope
+        old_unscopeds = [p for p in repo.get_all() if p.scope not in (SCOPE_ENTRY, SCOPE_HOLD)]
+        for p in old_unscopeds:
+            p.scope = SCOPE_ENTRY
+        if old_unscopeds:
+            session.commit()
         return
-    for param in settings.health_parameters:
-        repo.upsert(
-            name=param["name"],
-            weight=param["weight"],
-            enabled=param["enabled"],
-            threshold=param.get("threshold", 0),
-            description=param.get("description", ""),
-        )
-    logger.info("Seeded health parameters")
+
+    # ── Entry Health parameters (6 params, total weight 100) ─────────────
+    entry_params = [
+        {"name": "200 DMA",           "weight": 25, "threshold": 0,   "description": "Price vs 200-day EMA (entry rules)"},
+        {"name": "Drawdown",          "weight": 20, "threshold": 0,   "description": "Bell-curve drawdown from 60-day high"},
+        {"name": "Relative Strength", "weight": 20, "threshold": 0,   "description": "Stock 20-day return vs Nifty"},
+        {"name": "Volume Spike",      "weight": 10, "threshold": 1.5, "description": "Volume ratio vs 20-day average"},
+        {"name": "RSI",               "weight": 15, "threshold": 50,  "description": "RSI(14) — entry zone 48-60"},
+        {"name": "MACD",              "weight": 10, "threshold": 0,   "description": "MACD line vs signal + histogram slope"},
+    ]
+    for p in entry_params:
+        repo.upsert(name=p["name"], weight=p["weight"], enabled=True,
+                    threshold=p["threshold"], description=p["description"],
+                    scope=SCOPE_ENTRY)
+
+    # ── Hold Health parameters (7 params, total weight 100+20 = normalized) ─
+    # Profit % is an extra parameter for hold — contributes to exit scoring
+    hold_params = [
+        {"name": "200 DMA",           "weight": 25, "threshold": 0,    "description": "Price vs 200-day EMA (hold rules — more forgiving)"},
+        {"name": "Drawdown",          "weight": 20, "threshold": 0,    "description": "Drawdown from 60-day high (hold rules)"},
+        {"name": "Relative Strength", "weight": 20, "threshold": 0,    "description": "Stock 20-day return vs Nifty (hold rules)"},
+        {"name": "Volume Spike",      "weight": 10, "threshold": 1.0,  "description": "Volume ratio — lower threshold for holding"},
+        {"name": "RSI",               "weight": 15, "threshold": 45,   "description": "RSI(14) — hold zone 45-70"},
+        {"name": "MACD",              "weight": 10, "threshold": 0,    "description": "MACD state for holding"},
+        {"name": "Profit %",          "weight": 20, "threshold": 10.0, "description": "MTM profit contribution — threshold = profit % that triggers exit review"},
+    ]
+    for p in hold_params:
+        repo.upsert(name=p["name"], weight=p["weight"], enabled=True,
+                    threshold=p["threshold"], description=p["description"],
+                    scope=SCOPE_HOLD)
+
+    logger.info("Seeded entry and hold health parameters")
 
 
 def _seed_watchlist(session, settings) -> None:

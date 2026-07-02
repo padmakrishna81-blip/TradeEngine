@@ -37,8 +37,8 @@ def render(settings: Any, version_id: int = 1) -> None:
     st.title("Settings")
     st.caption("Application configuration")
 
-    tab_general, tab_capital, tab_alloc, tab_data, tab_advanced, tab_users = st.tabs(
-        ["General", "Capital & Profit", "Symbol Allocation", "Data", "Advanced", "Users"]
+    tab_general, tab_capital, tab_alloc, tab_data, tab_rules, tab_advanced, tab_users = st.tabs(
+        ["General", "Capital & Profit", "Symbol Allocation", "Data", "Trading Rules", "Advanced", "Users"]
     )
 
     with tab_general:
@@ -304,6 +304,155 @@ def render(settings: Any, version_id: int = 1) -> None:
             if st.button("Clear Cache", type="secondary"):
                 get_cache().clear()
                 st.success("Cache cleared.")
+
+    # ── Trading Rules tab ─────────────────────────────────────────────────
+    with tab_rules:
+        st.subheader("Trading Rules")
+        st.caption(
+            "All thresholds, hard gates, and profit contribution used by the "
+            "Scanner (Entry Health → BUY/WAIT) and Portfolio (Hold Health → HOLD/AVG/EXIT)."
+        )
+        pr = settings.portfolio_rules
+
+        # ── Scanner entry rules ───────────────────────────────────────────
+        st.write("### 📊 Scanner — Entry Health Thresholds")
+        col1, col2 = st.columns(2)
+        with col1:
+            buy_thr = st.number_input(
+                "BUY threshold (Entry Health %)",
+                value=float(pr.entry_buy_threshold),
+                min_value=50.0, max_value=95.0, step=1.0,
+                help="Minimum Entry Health % to generate a BUY signal",
+            )
+        with col2:
+            st.info("Below BUY threshold → **WAIT**")
+
+        st.write("**Hard Gates** — if any gate fails, signal is forced to WAIT regardless of score")
+        g1, g2, g3 = st.columns(3)
+        with g1:
+            gate_200dma = st.checkbox("Price must be above 200 DMA",
+                                       value=pr.hard_gate_above_200dma)
+        with g2:
+            gate_macd   = st.checkbox("No strong MACD bearish",
+                                       value=pr.hard_gate_no_strong_bear_macd)
+        with g3:
+            gate_dd     = st.number_input(
+                "Max drawdown gate (%)",
+                value=float(pr.hard_gate_max_drawdown),
+                min_value=-50.0, max_value=0.0, step=1.0,
+                help="BUY blocked if drawdown is worse than this (e.g. -15 blocks -16%)",
+            )
+
+        st.divider()
+
+        # ── Portfolio hold/exit/avg rules ─────────────────────────────────
+        st.write("### 📈 Portfolio — Hold/AVG/EXIT Thresholds")
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            hold_exit_thr = st.number_input(
+                "EXIT if Hold Health < (%)",
+                value=float(pr.hold_health_exit_threshold),
+                min_value=10.0, max_value=70.0, step=1.0,
+                help="Immediate EXIT when Hold Health drops below this",
+            )
+        with p2:
+            avg_min = st.number_input(
+                "AVG only if Hold Health ≥ (%)",
+                value=float(pr.avg_health_min),
+                min_value=30.0, max_value=90.0, step=1.0,
+                help="Only average into a position when health is above this",
+            )
+        with p3:
+            st.info(f"Hold Health between **{hold_exit_thr:.0f}%** and **{avg_min:.0f}%** → **HOLD**")
+
+        st.write("**Hard Stop-Loss** — immediate EXIT regardless of health")
+        hs1, hs2 = st.columns(2)
+        with hs1:
+            hard_stock = st.number_input(
+                "Stock hard stop (%)",
+                value=float(pr.hard_stop_stock),
+                min_value=-30.0, max_value=0.0, step=0.5,
+            )
+        with hs2:
+            hard_etf = st.number_input(
+                "ETF hard stop (%)",
+                value=float(pr.hard_stop_etf),
+                min_value=-30.0, max_value=0.0, step=0.5,
+            )
+
+        st.divider()
+
+        # ── Profit contribution to exit score ─────────────────────────────
+        st.write("### 💰 Profit Contribution to Exit Score")
+        st.caption(
+            "When MTM profit exceeds the threshold, profit is blended into the effective "
+            "health score that drives EXIT decisions. Higher profit weight means profit "
+            "matters more than hold health when computing the exit trigger."
+        )
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            p_exit_thr = st.number_input(
+                "Profit EXIT threshold (%)",
+                value=float(pr.profit_exit_threshold),
+                min_value=1.0, max_value=100.0, step=0.5,
+                help="MTM profit % above which profit starts contributing to exit scoring",
+            )
+        with pc2:
+            p_weight = st.number_input(
+                "Profit weight in exit score (0-100)",
+                value=float(pr.profit_exit_weight),
+                min_value=0.0, max_value=100.0, step=5.0,
+                help="0 = profit has no effect. 20 = profit contributes 20%, health 80%.",
+            )
+
+        formula_msg = (
+            f"Effective exit score = Hold Health × {100-p_weight:.0f}% + "
+            f"profit_contribution × {p_weight:.0f}%"
+        )
+        st.caption(f"Formula: **{formula_msg}**")
+
+        st.divider()
+
+        # ── Trailing buffers ──────────────────────────────────────────────
+        st.write("### 📉 Dynamic Trailing Stop Buffers")
+        st.caption("Trailing stop = highest_profit − buffer. Lower health → tighter buffer → exits sooner.")
+        trail_data = pd.DataFrame(pr.trailing_buffers)
+        trail_edited = st.data_editor(
+            trail_data,
+            column_config={
+                "min_health": st.column_config.NumberColumn("Min Health %", min_value=0, max_value=100),
+                "buffer":     st.column_config.NumberColumn("Trail Buffer %", min_value=0.0, max_value=20.0, step=0.25),
+            },
+            use_container_width=True, hide_index=True, num_rows="dynamic",
+        )
+
+        st.divider()
+        if st.button("Save Trading Rules", type="primary"):
+            pr.entry_buy_threshold          = float(buy_thr)
+            pr.hard_gate_above_200dma       = bool(gate_200dma)
+            pr.hard_gate_no_strong_bear_macd = bool(gate_macd)
+            pr.hard_gate_max_drawdown       = float(gate_dd)
+            pr.hold_health_exit_threshold   = float(hold_exit_thr)
+            pr.avg_health_min               = float(avg_min)
+            pr.hard_stop_stock              = float(hard_stock)
+            pr.hard_stop_etf                = float(hard_etf)
+            pr.profit_exit_threshold        = float(p_exit_thr)
+            pr.profit_exit_weight           = float(p_weight)
+            pr.trailing_buffers             = trail_edited.to_dict("records")
+            _save_yaml({"portfolio_rules": {
+                "entry_buy_threshold":           float(buy_thr),
+                "hard_gate_above_200dma":        bool(gate_200dma),
+                "hard_gate_no_strong_bear_macd": bool(gate_macd),
+                "hard_gate_max_drawdown":        float(gate_dd),
+                "hold_health_exit_threshold":    float(hold_exit_thr),
+                "avg_health_min":                float(avg_min),
+                "hard_stop_stock":               float(hard_stock),
+                "hard_stop_etf":                 float(hard_etf),
+                "profit_exit_threshold":         float(p_exit_thr),
+                "profit_exit_weight":            float(p_weight),
+                "trailing_buffers":              trail_edited.to_dict("records"),
+            }})
+            st.success("Trading rules saved.")
 
     with tab_advanced:
         st.subheader("Database")

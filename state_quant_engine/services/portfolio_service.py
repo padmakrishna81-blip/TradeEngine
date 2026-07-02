@@ -1,7 +1,7 @@
-"""Portfolio service - aggregates position data and P&L."""
+"""Portfolio service - aggregates position data and P&L + Hold Health scoring."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import date, datetime
 from loguru import logger
 from state_quant_engine.database.connection import get_session
@@ -11,78 +11,125 @@ from state_quant_engine.engine.indicators.data_fetcher import fetch_current_pric
 
 
 # ---------------------------------------------------------------------------
-# Smart exit signal constants
+# Portfolio action constants  (HOLD / AVG / EXIT only — spec §10)
 # ---------------------------------------------------------------------------
-_SIG_STRONG_HOLD   = "STRONG HOLD"
-_SIG_HOLD          = "HOLD"
-_SIG_PARTIAL_EXIT  = "PARTIAL EXIT"
-_SIG_FULL_EXIT     = "FULL EXIT"
-_SIG_WATCH         = "WATCH"
+
+_ACT_HOLD = "HOLD"
+_ACT_AVG  = "AVG"
+_ACT_EXIT = "EXIT"
 
 _SIG_COLORS = {
-    _SIG_STRONG_HOLD:  {"bg": "#00C853", "fg": "#000"},
-    _SIG_HOLD:         {"bg": "#2979FF", "fg": "#fff"},
-    _SIG_WATCH:        {"bg": "#FF6D00", "fg": "#fff"},
-    _SIG_PARTIAL_EXIT: {"bg": "#E65100", "fg": "#fff"},
-    _SIG_FULL_EXIT:    {"bg": "#D50000", "fg": "#fff"},
+    "HOLD":         {"bg": "#2979FF", "fg": "#fff"},
+    "AVG":          {"bg": "#00C853", "fg": "#000"},
+    "EXIT":         {"bg": "#D50000", "fg": "#fff"},
+    # legacy labels kept for backward-compat display
+    "STRONG HOLD":  {"bg": "#00C853", "fg": "#000"},
+    "PARTIAL EXIT": {"bg": "#E65100", "fg": "#fff"},
+    "FULL EXIT":    {"bg": "#D50000", "fg": "#fff"},
+    "WATCH":        {"bg": "#FF6D00", "fg": "#fff"},
 }
 
+# Old aliases still used in some UI pages
+_SIG_STRONG_HOLD  = "HOLD"
+_SIG_HOLD         = "HOLD"
+_SIG_WATCH        = "WATCH"
+_SIG_PARTIAL_EXIT = "EXIT"
+_SIG_FULL_EXIT    = "EXIT"
 
-def compute_exit_signal(
+
+def _trailing_buffer(hold_health: float, rules: Any) -> float:
+    """Return the dynamic trailing buffer % based on hold health and config."""
+    buffers = getattr(rules, "trailing_buffers", [])
+    for tier in sorted(buffers, key=lambda t: t["min_health"], reverse=True):
+        if hold_health >= tier["min_health"]:
+            return float(tier["buffer"])
+    return 0.75   # fallback
+
+
+def compute_portfolio_action(
     profit_pct: float,
     highest_profit: float,
-    health_pct: float,
-    trend: str,
-    risk: str,
+    hold_health_pct: float,
+    asset_type: str,
+    current_chunk: int,
+    max_chunks: int,
+    avg_price: float,
+    current_price: float,
+    next_trigger_pct: float,
     settings: Any,
 ) -> tuple[str, str]:
     """
-    Determine the smart exit signal for an open position.
+    Three-layer decision:  EXIT first → AVG second → HOLD
 
-    Decision tree:
-    1. STRONG HOLD  — profit_threshold hit BUT health >= strong_hold_min AND trend == Bullish
-    2. PARTIAL EXIT — profit_threshold hit, health is OK (hold_threshold..strong_hold_min)
-    3. FULL EXIT    — profit_threshold hit AND health < hold_threshold  OR  health < exit_threshold
-    4. HOLD         — no threshold hit, health >= hold_threshold
-    5. WATCH        — below hold_threshold, above exit_threshold
+    Profit % is factored into the effective exit score:
+      effective_exit_score = hold_health_pct × (1 - profit_weight/100)
+                           + profit_contribution × (profit_weight/100)
+    where profit_contribution = min(profit_pct / profit_exit_threshold, 1.0) × 100
+    When profit exceeds profit_exit_threshold the score gets boosted toward exit.
     """
-    pm  = settings.profit_management
-    hs  = settings.health_scores
-    pt  = pm.profit_threshold
+    rules      = getattr(settings, "portfolio_rules", None)
+    exit_thr   = getattr(rules, "hold_health_exit_threshold", 45) if rules else 45
+    avg_min    = getattr(rules, "avg_health_min", 60) if rules else 60
+    hard_stock = getattr(rules, "hard_stop_stock", -8.0) if rules else -8.0
+    hard_etf   = getattr(rules, "hard_stop_etf", -6.0) if rules else -6.0
+    hard_stop  = hard_etf if asset_type == "ETF" else hard_stock
+    p_exit_thr = getattr(rules, "profit_exit_threshold", 10.0) if rules else 10.0
+    p_weight   = getattr(rules, "profit_exit_weight", 20.0) if rules else 20.0  # 0-100
 
-    reasons = []
+    # ── Profit contribution to effective health score ─────────────────────
+    # If profit >= threshold, profit_contribution = 100 (healthy to exit).
+    # Blended score keeps the position feeling healthy longer when profitable.
+    if p_weight > 0 and p_exit_thr > 0:
+        profit_contrib = min(max(profit_pct / p_exit_thr, 0.0), 1.0) * 100
+        effective_health = (hold_health_pct * (1 - p_weight / 100)
+                            + profit_contrib * (p_weight / 100))
+    else:
+        effective_health = hold_health_pct
 
-    profit_triggered = profit_pct >= pt or highest_profit >= pt
+    profit_note = ""
+    if profit_pct >= p_exit_thr:
+        profit_note = f" (profit {profit_pct:.1f}% ≥ {p_exit_thr:.0f}% threshold)"
 
-    if profit_triggered:
-        reasons.append(f"profit {profit_pct:.1f}% ≥ threshold {pt:.0f}%")
+    # ── STEP 1: EXIT checks ───────────────────────────────────────────────
+    # E1 — Effective health breakdown (includes profit contribution)
+    if effective_health < exit_thr:
+        return _ACT_EXIT, (
+            f"Effective health {effective_health:.0f}% < {exit_thr:.0f}% exit threshold"
+            + profit_note
+        )
 
-        # Condition 1 — super positive: strong health + bullish trend
-        if health_pct >= pm.strong_hold_health_min and trend == pm.strong_hold_trend:
-            return _SIG_STRONG_HOLD, (
-                f"Profit threshold hit but health {health_pct:.0f}% is strong "
-                f"and trend is {trend} — hold for more gains"
+    # E3 — Hard stop-loss
+    if profit_pct <= hard_stop:
+        return _ACT_EXIT, f"Hard stop-loss hit: {profit_pct:.1f}% ≤ {hard_stop:.1f}%"
+
+    # E2 — Trailing profit stop
+    if highest_profit > 0:
+        buf = _trailing_buffer(effective_health, rules)
+        trail_exit_level = highest_profit - buf
+        if profit_pct <= trail_exit_level:
+            return _ACT_EXIT, (
+                f"Trailing stop: peak {highest_profit:.1f}% − buffer {buf:.1f}% = "
+                f"{trail_exit_level:.1f}%, current {profit_pct:.1f}%"
+                + profit_note
             )
 
-        # Condition 3 — health poor → full exit
-        if health_pct < hs.hold_threshold:
-            reasons.append(f"health {health_pct:.0f}% < {hs.hold_threshold:.0f}%")
-            if risk == "RISKY":
-                reasons.append("risk rated RISKY")
-            return _SIG_FULL_EXIT, "; ".join(reasons)
+    # ── STEP 2: AVG check ─────────────────────────────────────────────────
+    if (hold_health_pct >= avg_min
+            and current_chunk < max_chunks
+            and avg_price > 0):
+        price_drop_pct = (current_price - avg_price) / avg_price * 100
+        if price_drop_pct <= next_trigger_pct:
+            return _ACT_AVG, (
+                f"Health {hold_health_pct:.0f}% ≥ {avg_min:.0f}%, "
+                f"price dropped {price_drop_pct:.1f}% (trigger {next_trigger_pct:.1f}%), "
+                f"chunk {current_chunk}/{max_chunks}"
+            )
 
-        # Condition 2 — health ok → partial exit
-        reasons.append(f"health {health_pct:.0f}% is moderate")
-        return _SIG_PARTIAL_EXIT, "; ".join(reasons)
-
-    # No profit threshold — evaluate health
-    if health_pct < hs.exit_threshold:
-        return _SIG_FULL_EXIT, f"Health {health_pct:.0f}% below exit threshold {hs.exit_threshold:.0f}%"
-
-    if health_pct < hs.hold_threshold:
-        return _SIG_WATCH, f"Health {health_pct:.0f}% between watch and hold thresholds"
-
-    return _SIG_HOLD, f"Health {health_pct:.0f}% ≥ hold threshold; no exit trigger"
+    # ── STEP 3: HOLD ──────────────────────────────────────────────────────
+    return _ACT_HOLD, (
+        f"Health {hold_health_pct:.0f}% — hold position"
+        + (f"; profit {profit_pct:.1f}% (target {p_exit_thr:.0f}%)" if profit_pct > 0 else "")
+    )
 
 
 @dataclass
@@ -172,35 +219,87 @@ class PortfolioService:
             summary.open_positions = len(positions)
             summary.positions = pos_details
 
-            # Enrich positions with scan result data (health, trend, risk, exit signal)
+            # ── Compute Hold Health per symbol and derive HOLD/AVG/EXIT action ──
+            # Build indicator + hold health per unique symbol
+            try:
+                from state_quant_engine.engine.indicators.data_fetcher import fetch_ohlcv
+                from state_quant_engine.engine.indicators.technical import compute_indicators
+                from state_quant_engine.engine.health_score_engine import HoldHealthEngine
+                from state_quant_engine.repositories.health_parameter_repository import HealthParameterRepository
+
+                hp_session = get_session()
+                try:
+                    from state_quant_engine.repositories.health_parameter_repository import SCOPE_HOLD
+                    hp_repo = HealthParameterRepository(hp_session)
+                    params  = hp_repo.get_enabled_for_hold()
+                    param_list = [
+                        {"parameter_name": p.parameter_name, "weight": p.weight,
+                         "enabled": p.enabled, "threshold": p.threshold}
+                        for p in params
+                    ]
+                finally:
+                    hp_session.close()
+
+                hold_engine = HoldHealthEngine(parameters=param_list)
+                cap_cfg_etf = self.settings.etf_capital
+                cap_cfg_stk = self.settings.stock_capital
+
+                for pos in pos_details:
+                    sym = pos["symbol"]
+                    try:
+                        df  = fetch_ohlcv(sym, period=self.settings.data.download_period)
+                        ind = compute_indicators(df, sym,
+                                                 drawdown_days=self.settings.data.drawdown_days)
+                        hold_result = hold_engine.compute(ind, profit_pct=pos["profit_pct"])
+                        hold_pct    = hold_result.score_pct
+
+                        # Determine max chunks and next trigger for this symbol
+                        asset_type = pos.get("asset_type", "STOCK")
+                        cap_cfg    = cap_cfg_etf if asset_type == "ETF" else cap_cfg_stk
+                        max_chunks = cap_cfg.num_chunks
+
+                        # Count open chunks for this symbol
+                        all_chunks = [p for p in pos_details if p["symbol"] == sym]
+                        current_chunk = len(all_chunks)
+
+                        triggers = cap_cfg.next_buy_triggers
+                        next_trig = -(triggers[current_chunk] if current_chunk < len(triggers)
+                                      else triggers[-1])
+
+                        action, reason = compute_portfolio_action(
+                            profit_pct=pos["profit_pct"],
+                            highest_profit=pos["highest_profit"],
+                            hold_health_pct=hold_pct,
+                            asset_type=asset_type,
+                            current_chunk=current_chunk,
+                            max_chunks=max_chunks,
+                            avg_price=pos["buy_price"],
+                            current_price=pos["current_price"],
+                            next_trigger_pct=next_trig,
+                            settings=self.settings,
+                        )
+                        pos["hold_health_pct"]      = hold_pct
+                        pos["health_pct"]           = hold_pct
+                        pos["hold_component_scores"] = hold_result.component_scores
+                        pos["hold_reasons"]         = hold_result.reasons
+                        pos["exit_signal"]          = action
+                        pos["exit_reason"]          = reason
+                    except Exception as e:
+                        logger.warning(f"Hold health failed for {sym}: {e}")
+
+            except Exception as e:
+                logger.warning(f"Hold health batch failed: {e}")
+
+            # Merge trend/risk from scan results if available (from last run)
             if scan_results:
                 scan_map = {r.symbol: r for r in scan_results}
                 for pos in pos_details:
                     sr = scan_map.get(pos["symbol"])
                     if sr:
-                        pos["health_pct"]   = sr.score_pct
                         pos["trend"]        = sr.trend
                         pos["risk"]         = sr.risk
                         pos["trend_reason"] = sr.trend_reason
                         pos["risk_reason"]  = sr.risk_reason
-                        sig, reason = compute_exit_signal(
-                            profit_pct=pos["profit_pct"],
-                            highest_profit=pos["highest_profit"],
-                            health_pct=sr.score_pct,
-                            trend=sr.trend,
-                            risk=sr.risk,
-                            settings=self.settings,
-                        )
-                        pos["exit_signal"] = sig
-                        pos["exit_reason"] = reason
-
-                for r in scan_results:
-                    if r.recommendation == "BUY":
-                        summary.buy_signals += 1
-                    elif r.recommendation == "HOLD":
-                        summary.hold_signals += 1
-                    elif r.recommendation == "EXIT":
-                        summary.exit_signals += 1
 
             return summary
         finally:
