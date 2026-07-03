@@ -6,15 +6,15 @@ from state_quant_engine.services.seed_service import seed_defaults
 from state_quant_engine.database.connection import get_session
 from state_quant_engine.repositories.version_repository import VersionRepository
 from state_quant_engine.ui.pages import (
-    dashboard, health_parameters, watchlist, scanner,
+    dashboard, watchlist, scanner,
     portfolio, trade_engine, reports, backtesting,
-    settings, strategy_lab, versions,
+    settings, strategy_lab, versions, scoring_profiles,
 )
 
 
 PAGES = {
     "Dashboard":        dashboard,
-    "Health Parameters": health_parameters,
+    "Scoring Profiles": scoring_profiles,
     "Watchlist":        watchlist,
     "Scanner":          scanner,
     "Portfolio":        portfolio,

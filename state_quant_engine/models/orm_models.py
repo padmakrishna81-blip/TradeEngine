@@ -52,6 +52,63 @@ class TradingVersion(Base):
         return f"<TradingVersion {self.name}{tag}>"
 
 
+class ScoringProfile(Base):
+    """
+    Named scoring profile — one per (asset_type, context) combination.
+    Built-ins: stock_entry, stock_hold, etf_entry, etf_hold.
+    Custom profiles can be created for any instrument category.
+    """
+    __tablename__ = "scoring_profile"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    asset_type: Mapped[str] = mapped_column(String(20), nullable=False)   # ETF | STOCK | *
+    context: Mapped[str] = mapped_column(String(10), nullable=False)       # entry | hold
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    benchmark: Mapped[str] = mapped_column(String(20), default="^NSEI")    # benchmark ticker
+    buy_threshold: Mapped[float] = mapped_column(Float, default=75.0)      # entry only
+    exit_threshold: Mapped[float] = mapped_column(Float, default=45.0)     # hold only
+    avg_threshold: Mapped[float] = mapped_column(Float, default=60.0)      # hold only
+    hard_gate_above_200dma: Mapped[bool] = mapped_column(Boolean, default=True)
+    hard_gate_no_bear_macd: Mapped[bool] = mapped_column(Boolean, default=True)
+    hard_gate_max_drawdown: Mapped[float] = mapped_column(Float, default=-15.0)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    parameters: Mapped[list["ProfileParameter"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<ScoringProfile {self.name} ({self.asset_type}/{self.context})>"
+
+
+class ProfileParameter(Base):
+    """
+    Individual parameter within a scoring profile.
+    contribution_buckets stores JSON override for custom bucket thresholds.
+    """
+    __tablename__ = "profile_parameter"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("scoring_profile.id"), nullable=False)
+    parameter_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    weight: Mapped[float] = mapped_column(Float, default=10.0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    threshold: Mapped[float] = mapped_column(Float, default=0.0)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    profile: Mapped["ScoringProfile"] = relationship(back_populates="parameters")
+
+    __table_args__ = (
+        __import__("sqlalchemy").UniqueConstraint(
+            "profile_id", "parameter_name", name="uq_profile_param"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<ProfileParameter {self.parameter_name} w={self.weight}>"
+
+
 class HealthParameter(Base):
     """Configurable health scoring parameters."""
     __tablename__ = "health_parameter"

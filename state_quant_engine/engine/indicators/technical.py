@@ -106,8 +106,25 @@ def compute_indicators(df: pd.DataFrame, symbol: str, benchmark_df: Optional[pd.
     """Compute all technical indicators from OHLCV DataFrame."""
     result = IndicatorResult(symbol=symbol)
 
-    if df.empty or len(df) < 30:
-        result.error = f"Insufficient data for {symbol} (rows={len(df)})"
+    if df.empty:
+        result.error = f"No price data available for {symbol}"
+        return result
+
+    # Fetch live CMP even when history is too short for indicators
+    try:
+        from state_quant_engine.engine.indicators.data_fetcher import fetch_price_with_change
+        cmp, prev_close, change_pct = fetch_price_with_change(symbol)
+        if cmp > 0:
+            result.price      = cmp
+            result.prev_close = prev_close
+            result.change_pct = change_pct
+    except Exception:
+        pass
+
+    if len(df) < 30:
+        if result.price == 0.0:
+            result.price = float(df["close"].iloc[-1])
+        result.error = f"Insufficient history for {symbol} ({len(df)} days — need 30+)"
         return result
 
     try:

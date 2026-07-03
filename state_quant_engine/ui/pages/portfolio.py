@@ -94,10 +94,10 @@ def render(settings: Any, version_id: int = 1) -> None:
 
     rules = settings.portfolio_rules
     st.caption(
-        f"Exit threshold: health < **{rules.hold_health_exit_threshold:.0f}%** · "
-        f"AVG threshold: health ≥ **{rules.avg_health_min:.0f}%** · "
-        f"Hard stop: Stocks **{rules.hard_stop_stock:.0f}%** / ETFs **{rules.hard_stop_etf:.0f}%** · "
-        f"Signals auto-computed from Hold Health. **HOLD** = keep · **AVG** = buy next chunk · **EXIT** = close."
+        f"Thresholds from Scoring Profiles (per asset type) · "
+        f"Global hard stops: Stocks **{rules.hard_stop_stock:.0f}%** / ETFs **{rules.hard_stop_etf:.0f}%** · "
+        f"Profit target: **{rules.profit_exit_threshold:.0f}%** · "
+        f"Configure per-profile in **Scoring Profiles → Profile Settings**"
     )
 
     # ── Signal legend ─────────────────────────────────────────────────────
@@ -154,21 +154,30 @@ def render(settings: Any, version_id: int = 1) -> None:
         trnd_html = _badge(trnd, _TREND_STYLE, "#37474F") if trnd else '<span style="color:#555">—</span>'
         risk_html = _badge(risk, _RISK_STYLE,  "#37474F") if risk else '<span style="color:#555">—</span>'
 
+        pnl_amt  = float(row["value"]) - float(row["cost"])
+        avg_cost_cell = (
+            f'<span style="font-weight:600">₹{row["avg_cost"]:.2f}</span>'
+            f'<br><small style="color:#888">Qty {row["qty"]:.0f}</small>'
+        )
         cmp_cell = (
             f'<span style="font-weight:700">₹{row["cur_price"]:.2f}</span>'
             f'<br><small style="color:{chg_color}">{chg_arrow} {day_chg:+.2f}%</small>'
             + (f'<br><small style="color:#555">Prev ₹{prev_cl:.2f}</small>' if prev_cl > 0 else "")
+        )
+        pnl_cell = (
+            f'<span style="color:{pc};font-weight:700">{row["pnl_pct"]:+.2f}%</span>'
+            f'<br><small style="color:{pc}">₹{pnl_amt:+,.0f}</small>'
         )
 
         rows_html.append(
             f"<tr>"
             f"<td><b>{sym}</b></td>"
             f"<td style='text-align:center'>{int(row['chunks'])}</td>"
-            f"<td style='text-align:right'>₹{row['avg_cost']:.2f}</td>"
+            f"<td style='text-align:right'>{avg_cost_cell}</td>"
             f"<td style='text-align:right'>{cmp_cell}</td>"
             f"<td style='text-align:right'>₹{row['cost']:,.0f}</td>"
             f"<td style='text-align:right'>₹{row['value']:,.0f}</td>"
-            f"<td style='text-align:right;color:{pc};font-weight:700'>{row['pnl_pct']:+.2f}%</td>"
+            f"<td style='text-align:right'>{pnl_cell}</td>"
             f"<td style='text-align:center'>{sig_html}</td>"
             f"<td style='text-align:center'>{trnd_html}</td>"
             f"<td style='text-align:center'>{risk_html}</td>"
@@ -179,8 +188,8 @@ def render(settings: Any, version_id: int = 1) -> None:
     table_html = (
         _CSS
         + '<table class="ptable"><thead><tr>'
-        + '<th>Symbol</th><th>Chunks</th><th>Avg Cost</th><th>CMP / Day%</th>'
-        + '<th>Cost ₹</th><th>Value ₹</th><th>P&L %</th>'
+        + '<th>Symbol</th><th>Chunks</th><th>Avg Cost / Qty</th><th>CMP / Day%</th>'
+        + '<th>Invested ₹</th><th>Value ₹</th><th>P&L % / ₹</th>'
         + '<th>Signal</th><th>Trend</th><th>Risk</th><th>Trade / Detail</th>'
         + '</tr></thead><tbody>'
         + "".join(rows_html)

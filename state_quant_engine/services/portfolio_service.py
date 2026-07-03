@@ -57,24 +57,32 @@ def compute_portfolio_action(
     current_price: float,
     next_trigger_pct: float,
     settings: Any,
+    profile: Any = None,   # ScoringProfile object — overrides global thresholds when provided
 ) -> tuple[str, str]:
     """
     Three-layer decision:  EXIT first → AVG second → HOLD
 
-    Profit % is factored into the effective exit score:
-      effective_exit_score = hold_health_pct × (1 - profit_weight/100)
-                           + profit_contribution × (profit_weight/100)
-    where profit_contribution = min(profit_pct / profit_exit_threshold, 1.0) × 100
-    When profit exceeds profit_exit_threshold the score gets boosted toward exit.
+    Thresholds: profile.exit_threshold / profile.avg_threshold take priority over
+    portfolio_rules.hold_health_exit_threshold / avg_health_min.
+    Hard stops, trailing buffers, and profit weight always come from portfolio_rules
+    (global, not per-profile).
     """
     rules      = getattr(settings, "portfolio_rules", None)
-    exit_thr   = getattr(rules, "hold_health_exit_threshold", 45) if rules else 45
-    avg_min    = getattr(rules, "avg_health_min", 60) if rules else 60
+
+    # Per-profile thresholds override global when a profile is provided
+    if profile is not None:
+        exit_thr = float(getattr(profile, "exit_threshold", 45))
+        avg_min  = float(getattr(profile, "avg_threshold",  60))
+    else:
+        exit_thr = getattr(rules, "hold_health_exit_threshold", 45) if rules else 45
+        avg_min  = getattr(rules, "avg_health_min", 60) if rules else 60
+
+    # Global rules (not overridden by profile)
     hard_stock = getattr(rules, "hard_stop_stock", -8.0) if rules else -8.0
     hard_etf   = getattr(rules, "hard_stop_etf", -6.0) if rules else -6.0
     hard_stop  = hard_etf if asset_type == "ETF" else hard_stock
     p_exit_thr = getattr(rules, "profit_exit_threshold", 10.0) if rules else 10.0
-    p_weight   = getattr(rules, "profit_exit_weight", 20.0) if rules else 20.0  # 0-100
+    p_weight   = getattr(rules, "profit_exit_weight", 20.0) if rules else 20.0
 
     # ── Profit contribution to effective health score ─────────────────────
     # If profit >= threshold, profit_contribution = 100 (healthy to exit).
@@ -224,37 +232,31 @@ class PortfolioService:
             try:
                 from state_quant_engine.engine.indicators.data_fetcher import fetch_ohlcv
                 from state_quant_engine.engine.indicators.technical import compute_indicators
-                from state_quant_engine.engine.health_score_engine import HoldHealthEngine
-                from state_quant_engine.repositories.health_parameter_repository import HealthParameterRepository
+                from state_quant_engine.engine.health_score_engine import HoldHealthEngine, load_profile_engine
 
-                hp_session = get_session()
-                try:
-                    from state_quant_engine.repositories.health_parameter_repository import SCOPE_HOLD
-                    hp_repo = HealthParameterRepository(hp_session)
-                    params  = hp_repo.get_enabled_for_hold()
-                    param_list = [
-                        {"parameter_name": p.parameter_name, "weight": p.weight,
-                         "enabled": p.enabled, "threshold": p.threshold}
-                        for p in params
-                    ]
-                finally:
-                    hp_session.close()
+                # Cache one hold engine AND profile per asset type
+                _hold_cache: dict = {}   # asset_type → (engine, profile)
+                def _get_hold_engine_and_profile(asset_type: str):
+                    if asset_type not in _hold_cache:
+                        eng, prof = load_profile_engine(asset_type, "hold", session)
+                        _hold_cache[asset_type] = (eng, prof)
+                    return _hold_cache[asset_type]
 
-                hold_engine = HoldHealthEngine(parameters=param_list)
                 cap_cfg_etf = self.settings.etf_capital
                 cap_cfg_stk = self.settings.stock_capital
 
                 for pos in pos_details:
-                    sym = pos["symbol"]
+                    sym        = pos["symbol"]
+                    asset_type = pos.get("asset_type", "STOCK")
                     try:
                         df  = fetch_ohlcv(sym, period=self.settings.data.download_period)
                         ind = compute_indicators(df, sym,
                                                  drawdown_days=self.settings.data.drawdown_days)
-                        hold_result = hold_engine.compute(ind, profit_pct=pos["profit_pct"])
+                        hold_eng, hold_prof = _get_hold_engine_and_profile(asset_type)
+                        hold_result = hold_eng.compute(ind, profit_pct=pos["profit_pct"])
                         hold_pct    = hold_result.score_pct
 
                         # Determine max chunks and next trigger for this symbol
-                        asset_type = pos.get("asset_type", "STOCK")
                         cap_cfg    = cap_cfg_etf if asset_type == "ETF" else cap_cfg_stk
                         max_chunks = cap_cfg.num_chunks
 
@@ -277,6 +279,7 @@ class PortfolioService:
                             current_price=pos["current_price"],
                             next_trigger_pct=next_trig,
                             settings=self.settings,
+                            profile=hold_prof,   # profile thresholds override global
                         )
                         pos["hold_health_pct"]      = hold_pct
                         pos["health_pct"]           = hold_pct
@@ -365,24 +368,76 @@ class PortfolioService:
 
             # Enrich positions
             scan_map = {r.symbol: r for r in scan_results}
+            from state_quant_engine.engine.health_score_engine import load_profile_engine
+            _prof_cache: dict = {}
+            def _get_prof(asset_type: str):
+                if asset_type not in _prof_cache:
+                    _, p = load_profile_engine(asset_type, "hold", session)
+                    _prof_cache[asset_type] = p
+                return _prof_cache[asset_type]
+
+            from state_quant_engine.engine.indicators.data_fetcher import fetch_ohlcv
+            from state_quant_engine.engine.indicators.technical import compute_indicators
+            from state_quant_engine.engine.health_score_engine import HoldHealthEngine, load_profile_engine as lpe
+            from state_quant_engine.repositories.health_parameter_repository import HealthParameterRepository
+            hp_s = get_session()
+            try:
+                hp_r   = HealthParameterRepository(hp_s)
+                hparams = [{"parameter_name": p.parameter_name, "weight": p.weight,
+                             "enabled": p.enabled, "threshold": p.threshold}
+                            for p in hp_r.get_enabled_for_hold()]
+            finally:
+                hp_s.close()
+            hold_engine_fallback = HoldHealthEngine(parameters=hparams)
+
+            cap_cfg_etf = self.settings.etf_capital
+            cap_cfg_stk = self.settings.stock_capital
+
             for pos in summary.positions:
                 sr = scan_map.get(pos["symbol"])
                 if sr:
-                    pos["health_pct"]   = sr.score_pct
                     pos["trend"]        = sr.trend
                     pos["risk"]         = sr.risk
                     pos["trend_reason"] = sr.trend_reason
                     pos["risk_reason"]  = sr.risk_reason
-                    sig, reason = compute_exit_signal(
+
+                # Compute hold health for action signal
+                sym        = pos["symbol"]
+                asset_type = pos.get("asset_type", "STOCK")
+                try:
+                    df_h  = fetch_ohlcv(sym, period=self.settings.data.download_period)
+                    ind_h = compute_indicators(df_h, sym,
+                                               drawdown_days=self.settings.data.drawdown_days)
+                    hold_eng, hold_prof = lpe(asset_type, "hold", session)
+                    hold_result = hold_eng.compute(ind_h, profit_pct=pos["profit_pct"])
+                    hold_pct    = hold_result.score_pct
+
+                    cap_cfg    = cap_cfg_etf if asset_type == "ETF" else cap_cfg_stk
+                    all_chunks = [p for p in summary.positions if p["symbol"] == sym]
+                    current_chunk = len(all_chunks)
+                    triggers   = cap_cfg.next_buy_triggers
+                    next_trig  = -(triggers[current_chunk] if current_chunk < len(triggers)
+                                   else triggers[-1])
+
+                    action, reason = compute_portfolio_action(
                         profit_pct=pos["profit_pct"],
                         highest_profit=pos["highest_profit"],
-                        health_pct=sr.score_pct,
-                        trend=sr.trend,
-                        risk=sr.risk,
+                        hold_health_pct=hold_pct,
+                        asset_type=asset_type,
+                        current_chunk=current_chunk,
+                        max_chunks=cap_cfg.num_chunks,
+                        avg_price=pos["buy_price"],
+                        current_price=pos["current_price"],
+                        next_trigger_pct=next_trig,
                         settings=self.settings,
+                        profile=hold_prof,
                     )
-                    pos["exit_signal"] = sig
-                    pos["exit_reason"] = reason
+                    pos["hold_health_pct"] = hold_pct
+                    pos["health_pct"]      = hold_pct
+                    pos["exit_signal"]     = action
+                    pos["exit_reason"]     = reason
+                except Exception as e:
+                    logger.warning(f"analyse_positions hold health failed for {sym}: {e}")
 
             return summary.positions
         finally:

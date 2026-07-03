@@ -315,6 +315,65 @@ class HealthScoreEngine(EntryHealthEngine):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Profile-driven engine factory
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_engine_for_profile(profile: Any, parameters: List[Dict]):
+    """
+    Return the correct engine (Entry or Hold) pre-configured from a ScoringProfile object.
+
+    profile   — ScoringProfile ORM instance
+    parameters — list of dicts (already fetched from ProfileParameter for this profile)
+    """
+    if profile.context == "entry":
+        return EntryHealthEngine(
+            parameters=parameters,
+            buy_threshold=profile.buy_threshold,
+            hard_gate_above_200dma=profile.hard_gate_above_200dma,
+            hard_gate_no_strong_bear_macd=profile.hard_gate_no_bear_macd,
+            hard_gate_max_drawdown=profile.hard_gate_max_drawdown,
+        )
+    return HoldHealthEngine(parameters=parameters)
+
+
+def load_profile_engine(asset_type: str, context: str, db_session: Any):
+    """
+    Convenience: look up the scoring profile for (asset_type, context) from the DB,
+    load its parameters, and return (engine, profile).
+
+    Falls back gracefully to default engines if no profile found.
+    """
+    from state_quant_engine.repositories.scoring_profile_repository import ScoringProfileRepository
+    repo    = ScoringProfileRepository(db_session)
+    profile = repo.get_for(asset_type, context)
+    if not profile:
+        # Fallback to legacy scope-based parameters
+        from state_quant_engine.repositories.health_parameter_repository import HealthParameterRepository, SCOPE_ENTRY, SCOPE_HOLD
+        hp_repo = HealthParameterRepository(db_session)
+        scope   = SCOPE_ENTRY if context == "entry" else SCOPE_HOLD
+        params  = hp_repo.get_enabled(scope)
+        param_list = [{"parameter_name": p.parameter_name, "weight": p.weight,
+                       "enabled": p.enabled, "threshold": p.threshold} for p in params]
+
+        class _FallbackProfile:
+            context = context
+            buy_threshold = 75.0
+            exit_threshold = 45.0
+            avg_threshold = 60.0
+            hard_gate_above_200dma = True
+            hard_gate_no_bear_macd = True
+            hard_gate_max_drawdown = -15.0
+            benchmark = "^NSEI"
+
+        fp = _FallbackProfile()
+        fp.context = context
+        return build_engine_for_profile(fp, param_list), fp
+
+    params = repo.get_parameters_as_dicts(profile.id)
+    return build_engine_for_profile(profile, params), profile
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Market Health Engine (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 

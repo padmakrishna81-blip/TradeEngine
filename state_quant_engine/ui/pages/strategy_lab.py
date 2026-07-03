@@ -75,8 +75,16 @@ def render(settings: Any, version_id: int = 1) -> None:
     try:
         strat_repo = StrategyRepository(session)
         hp_repo    = HealthParameterRepository(session)
-        all_params = hp_repo.get_all()
-        param_names = [p.parameter_name for p in all_params]
+        all_params  = hp_repo.get_all()
+        # Deduplicate by name — strategy weights use entry-scope params as the canonical set
+        seen = set()
+        unique_params = []
+        for p in all_params:
+            if p.parameter_name not in seen:
+                seen.add(p.parameter_name)
+                unique_params.append(p)
+        param_names = [p.parameter_name for p in unique_params]
+        all_params  = unique_params   # replace reference used below
 
         strategies = strat_repo.get_all()
         active     = strat_repo.get_active()
@@ -131,6 +139,7 @@ def render(settings: Any, version_id: int = 1) -> None:
             load_from = st.selectbox(
                 "Load weights from existing strategy",
                 load_opts,
+                key="lab_load_from",
                 index=0,
                 help="Choose a strategy to pre-fill the weights below. Undefined parameters default to 0.",
             )
@@ -155,7 +164,8 @@ def render(settings: Any, version_id: int = 1) -> None:
 
             st.divider()
 
-            with st.form("create_strategy_form"):
+            form_suffix = load_from.replace(" ", "_").replace("—", "blank")
+            with st.form(f"create_strategy_form_{form_suffix}"):
                 col_l, col_r = st.columns(2)
                 with col_l:
                     s_name = st.text_input("Strategy Name", value=seed_name)
@@ -195,7 +205,7 @@ def render(settings: Any, version_id: int = 1) -> None:
                     with cols[i % 2]:
                         weights[pname] = st.number_input(
                             pname, min_value=0.0, max_value=100.0,
-                            value=default_w, step=5.0, key=f"w_{pname}",
+                            value=default_w, step=5.0, key=f"w_{form_suffix}_{pname}",
                         )
 
                 submitted = st.form_submit_button("Save Strategy", type="primary")

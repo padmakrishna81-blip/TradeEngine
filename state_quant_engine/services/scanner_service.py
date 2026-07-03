@@ -9,6 +9,7 @@ from state_quant_engine.engine.indicators.data_fetcher import fetch_ohlcv, fetch
 from state_quant_engine.engine.indicators.technical import compute_indicators, compute_market_breadth, IndicatorResult
 from state_quant_engine.engine.health_score_engine import (
     EntryHealthEngine, HoldHealthEngine, HealthScoreEngine, HealthScoreResult,
+    load_profile_engine,
 )
 from state_quant_engine.engine.health_score_engine_market import MarketHealthEngine
 from state_quant_engine.engine.trade_engine import EntryEngine, HoldEngine, ExitEngine, ChunkEngine, TradeSignal
@@ -115,22 +116,11 @@ class ScannerService:
         Symbols that already have an OPEN position for this version are excluded —
         those belong to the Portfolio workflow.
         Returns only BUY / WAIT recommendations.
+        Profile-driven: loads stock_entry or etf_entry profile per symbol.
         """
         self._load_auxiliary()
-        stock_params = strategy_params or self._get_stock_parameters()
-        dd_days      = drawdown_days if drawdown_days is not None else self.settings.data.drawdown_days
+        dd_days = drawdown_days if drawdown_days is not None else self.settings.data.drawdown_days
 
-        buy_threshold = getattr(self.settings, "portfolio_rules", None)
-        pr            = buy_threshold  # alias for readability
-        buy_threshold = pr.entry_buy_threshold if pr else 75.0
-
-        health_engine = EntryHealthEngine(
-            parameters=stock_params,
-            buy_threshold=buy_threshold,
-            hard_gate_above_200dma=pr.hard_gate_above_200dma if pr else True,
-            hard_gate_no_strong_bear_macd=pr.hard_gate_no_strong_bear_macd if pr else True,
-            hard_gate_max_drawdown=pr.hard_gate_max_drawdown if pr else -15.0,
-        )
         chunk_engine = ChunkEngine(self.settings)
 
         session = get_session()
@@ -147,6 +137,26 @@ class ScannerService:
             # SCANNER ONLY handles symbols NOT currently in portfolio for this version
             open_symbols = {p.symbol for p in pos_repo.get_open_positions(version_id=version_id)}
             watchlist = [w for w in watchlist if w.symbol not in open_symbols]
+
+            # Pre-load one engine per asset type using profiles
+            _engine_cache: dict = {}  # asset_type → (engine, profile)
+            def _get_entry_engine(asset_type: str):
+                if asset_type not in _engine_cache:
+                    # Strategy params override profile if provided
+                    if strategy_params:
+                        pr   = getattr(self.settings, "portfolio_rules", None)
+                        eng  = EntryHealthEngine(
+                            parameters=strategy_params,
+                            buy_threshold=pr.entry_buy_threshold if pr else 75.0,
+                            hard_gate_above_200dma=pr.hard_gate_above_200dma if pr else True,
+                            hard_gate_no_strong_bear_macd=pr.hard_gate_no_strong_bear_macd if pr else True,
+                            hard_gate_max_drawdown=pr.hard_gate_max_drawdown if pr else -15.0,
+                        )
+                        _engine_cache[asset_type] = (eng, None)
+                    else:
+                        eng, prof = load_profile_engine(asset_type, "entry", session)
+                        _engine_cache[asset_type] = (eng, prof)
+                return _engine_cache[asset_type][0]
 
             breadth_symbols = [w.symbol for w in watchlist]
             breadth_dfs = {sym: fetch_ohlcv(sym, period=self.settings.data.download_period) for sym in breadth_symbols[:20]}
@@ -179,7 +189,7 @@ class ScannerService:
                     ind = compute_indicators(df, sym, self._benchmark_df, self._vix_df, drawdown_days=dd_days)
                     ind.breadth = market_breadth
 
-                    health = health_engine.compute(ind)
+                    health = _get_entry_engine(atype).compute(ind)
 
                     positions = pos_repo.get_by_symbol(sym, version_id=version_id)
                     chunks_held = len(positions)
@@ -223,11 +233,23 @@ class ScannerService:
                     ))
                 except Exception as e:
                     logger.error(f"Scan error for {sym}: {e}")
+                    # Still fetch live price so CMP shows in the table
+                    try:
+                        from state_quant_engine.engine.indicators.data_fetcher import fetch_price_with_change
+                        cmp, prev_close, change_pct = fetch_price_with_change(sym)
+                    except Exception:
+                        cmp, prev_close, change_pct = 0.0, 0.0, 0.0
+
+                    err_msg = "Insufficient price history — need ≥30 days for indicators" \
+                        if "Insufficient data" in str(e) or "30" in str(e) or len(str(e)) < 5 \
+                        else str(e)
+
                     results.append(ScanResult(
                         rank=0, symbol=sym, name=name,
-                        asset_type=atype, price=0.0, health_score=0.0,
-                        max_score=100.0, score_pct=0.0, recommendation="ERROR",
-                        reasons=[str(e)], component_scores={}, error=str(e),
+                        asset_type=atype, price=cmp, health_score=0.0,
+                        max_score=100.0, score_pct=0.0, recommendation="WAIT",
+                        reasons=[f"⚠ {err_msg}"], component_scores={}, error=err_msg,
+                        change_pct=change_pct, prev_close=prev_close,
                     ))
 
             results.sort(key=lambda r: r.score_pct, reverse=True)

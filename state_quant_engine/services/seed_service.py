@@ -20,6 +20,7 @@ def seed_defaults(settings: Any) -> None:
         _seed_watchlist(session, settings)
         _seed_strategies(session, settings)
         _seed_admin_user(session)
+        _seed_scoring_profiles(session)
         _load_symbol_allocations(session, settings)
     finally:
         session.close()
@@ -140,6 +141,92 @@ def _seed_strategies(session, settings) -> None:
         if i == 0:
             repo.set_active(s.id)
     logger.info("Seeded strategies")
+
+
+def _seed_scoring_profiles(session) -> None:
+    """Seed four canonical scoring profiles if not already present."""
+    from state_quant_engine.repositories.scoring_profile_repository import (
+        ScoringProfileRepository,
+        PROFILE_STOCK_ENTRY, PROFILE_STOCK_HOLD,
+        PROFILE_ETF_ENTRY, PROFILE_ETF_HOLD,
+    )
+    repo = ScoringProfileRepository(session)
+    if repo.get_by_name(PROFILE_STOCK_ENTRY):
+        return   # already seeded
+
+    # ── STOCK ENTRY ───────────────────────────────────────────────────────
+    se = repo.upsert_profile(
+        name=PROFILE_STOCK_ENTRY, asset_type="STOCK", context="entry",
+        description="Entry scoring for stocks — strict quality pullback setup",
+        benchmark="^NSEI", buy_threshold=75.0,
+        hard_gate_above_200dma=True, hard_gate_no_bear_macd=True, hard_gate_max_drawdown=-15.0,
+        is_default=True,
+    )
+    for name, weight, thr, desc in [
+        ("200 DMA",           25, 0,   "Price vs 200 EMA — strict entry"),
+        ("Drawdown",          20, 0,   "Bell-curve: ideal 5-8% pullback"),
+        ("Relative Strength", 20, 0,   "Outperforming Nifty on 20-day basis"),
+        ("Volume Spike",      10, 1.5, "Volume ≥ 1.5× avg"),
+        ("RSI",               15, 50,  "RSI 48-60 = ideal"),
+        ("MACD",              10, 0,   "MACD bullish + histogram rising"),
+    ]:
+        repo.upsert_parameter(se.id, name, weight, True, thr, desc)
+
+    # ── STOCK HOLD ────────────────────────────────────────────────────────
+    sh = repo.upsert_profile(
+        name=PROFILE_STOCK_HOLD, asset_type="STOCK", context="hold",
+        description="Hold scoring for stocks — forgiving, tracks degradation + profit",
+        benchmark="^NSEI", exit_threshold=45.0, avg_threshold=60.0,
+        hard_gate_above_200dma=False, hard_gate_no_bear_macd=False, hard_gate_max_drawdown=-20.0,
+        is_default=True,
+    )
+    for name, weight, thr, desc in [
+        ("200 DMA",           25, 0,    "Price vs 200 EMA — hold rules"),
+        ("Drawdown",          20, 0,    "Drawdown from 60-day high — hold rules"),
+        ("Relative Strength", 20, 0,    "Stock vs Nifty — hold rules"),
+        ("Volume Spike",      10, 1.0,  "Volume ratio — lower threshold for holding"),
+        ("RSI",               15, 45,   "RSI 45-70 = healthy hold"),
+        ("MACD",              10, 0,    "MACD state for holding"),
+        ("Profit %",          20, 10.0, "MTM profit — threshold = target % for exit review"),
+    ]:
+        repo.upsert_parameter(sh.id, name, weight, True, thr, desc)
+
+    # ── ETF ENTRY ─────────────────────────────────────────────────────────
+    ee = repo.upsert_profile(
+        name=PROFILE_ETF_ENTRY, asset_type="ETF", context="entry",
+        description="Entry scoring for ETFs — trend-following, less volume emphasis",
+        benchmark="^NSEI", buy_threshold=70.0,
+        hard_gate_above_200dma=True, hard_gate_no_bear_macd=True, hard_gate_max_drawdown=-12.0,
+        is_default=True,
+    )
+    for name, weight, thr, desc in [
+        ("200 DMA",           35, 0,   "Price vs 200 EMA — ETF trend"),
+        ("Drawdown",          25, 0,   "Bell-curve pullback — ETF (slightly wider ideal zone)"),
+        ("Relative Strength", 20, 0,   "ETF vs Nifty outperformance"),
+        ("RSI",               10, 45,  "RSI 45-62 = ideal for ETF entry"),
+        ("MACD",              10, 0,   "MACD state for ETF"),
+    ]:
+        repo.upsert_parameter(ee.id, name, weight, True, thr, desc)
+
+    # ── ETF HOLD ──────────────────────────────────────────────────────────
+    eh = repo.upsert_profile(
+        name=PROFILE_ETF_HOLD, asset_type="ETF", context="hold",
+        description="Hold scoring for ETFs — patient, wider thresholds",
+        benchmark="^NSEI", exit_threshold=35.0, avg_threshold=55.0,
+        hard_gate_above_200dma=False, hard_gate_no_bear_macd=False, hard_gate_max_drawdown=-18.0,
+        is_default=True,
+    )
+    for name, weight, thr, desc in [
+        ("200 DMA",           35, 0,    "Price vs 200 EMA — ETF hold"),
+        ("Drawdown",          25, 0,    "Drawdown from 60-day high — ETF hold"),
+        ("Relative Strength", 20, 0,    "ETF vs Nifty — hold"),
+        ("RSI",               10, 40,   "RSI 40-72 = acceptable ETF hold zone"),
+        ("MACD",              10, 0,    "MACD state for ETF hold"),
+        ("Profit %",          20, 15.0, "Profit target for ETF — wider (15%)"),
+    ]:
+        repo.upsert_parameter(eh.id, name, weight, True, thr, desc)
+
+    logger.info("Seeded scoring profiles: stock_entry, stock_hold, etf_entry, etf_hold")
 
 
 def _load_symbol_allocations(session, settings) -> None:

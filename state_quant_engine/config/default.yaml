@@ -191,15 +191,15 @@ market_health_parameters:
   weight: 20
 portfolio_rules:
   avg_health_min: 60
-  entry_buy_threshold: 75.0
+  entry_buy_threshold: 70.0
   hard_gate_above_200dma: true
   hard_gate_max_drawdown: -15.0
   hard_gate_no_strong_bear_macd: true
   hard_stop_etf: -6.0
   hard_stop_stock: -8.0
   hold_health_exit_threshold: 45
-  profit_exit_threshold: 10.0
-  profit_exit_weight: 20
+  profit_exit_threshold: 8.0
+  profit_exit_weight: 30.0
   trailing_buffers:
   - buffer: 3.0
     min_health: 80
