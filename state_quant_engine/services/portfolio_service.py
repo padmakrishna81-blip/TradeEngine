@@ -82,21 +82,14 @@ def compute_portfolio_action(
     hard_etf   = getattr(rules, "hard_stop_etf", -6.0) if rules else -6.0
     hard_stop  = hard_etf if asset_type == "ETF" else hard_stock
     p_exit_thr = getattr(rules, "profit_exit_threshold", 10.0) if rules else 10.0
-    p_weight   = getattr(rules, "profit_exit_weight", 20.0) if rules else 20.0
 
-    # ── Profit contribution to effective health score ─────────────────────
-    # If profit >= threshold, profit_contribution = 100 (healthy to exit).
-    # Blended score keeps the position feeling healthy longer when profitable.
-    if p_weight > 0 and p_exit_thr > 0:
-        profit_contrib = min(max(profit_pct / p_exit_thr, 0.0), 1.0) * 100
-        effective_health = (hold_health_pct * (1 - p_weight / 100)
-                            + profit_contrib * (p_weight / 100))
-    else:
-        effective_health = hold_health_pct
+    # Hold health already incorporates Profit % parameter.
+    # No separate blending needed here — use hold_health_pct directly.
+    effective_health = hold_health_pct
 
     profit_note = ""
     if profit_pct >= p_exit_thr:
-        profit_note = f" (profit {profit_pct:.1f}% ≥ {p_exit_thr:.0f}% threshold)"
+        profit_note = f" (profit {profit_pct:.1f}% ≥ {p_exit_thr:.0f}% target, exit pressure active)"
 
     # ── STEP 1: EXIT checks ───────────────────────────────────────────────
     # E1 — Effective health breakdown (includes profit contribution)

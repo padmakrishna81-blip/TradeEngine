@@ -341,33 +341,27 @@ def render(settings: Any, version_id: int = 1) -> None:
 
         st.divider()
 
-        # ── Profit contribution to exit score (global) ────────────────────
-        st.write("### 💰 Profit Contribution to Exit Score")
+        # ── Profit target for exit pressure ──────────────────────────────────
+        st.write("### 💰 Profit Target (Exit Pressure Threshold)")
         st.caption(
-            "When MTM profit exceeds the threshold, it is blended into the effective "
-            "health score that drives EXIT decisions. Applies to all profiles equally."
+            "The **Profit %** parameter in the Hold Health score uses this threshold. "
+            "Below this profit → full hold health contribution (no exit pressure). "
+            "At this profit → 50% exit pressure. At 2× this → maximum exit pressure. "
+            "Configure this threshold in **Scoring Profiles → stock_hold → Threshold column** "
+            "for the 'Profit %' row."
         )
-        pc1, pc2 = st.columns(2)
-        with pc1:
-            p_exit_thr = st.number_input(
-                "Profit EXIT threshold (%)",
-                value=float(pr.profit_exit_threshold),
-                min_value=1.0, max_value=100.0, step=0.5,
-                help="MTM profit % at which contribution reaches 100%",
-            )
-        with pc2:
-            p_weight = st.number_input(
-                "Profit weight in exit score (0-100)",
-                value=float(pr.profit_exit_weight),
-                min_value=0.0, max_value=100.0, step=5.0,
-                help="0 = profit ignored. 20 = profit 20%, health 80%.",
-            )
-
-        formula_msg = (
-            f"Effective exit score = Hold Health × {100-p_weight:.0f}% + "
-            f"profit_contribution × {p_weight:.0f}%"
+        st.info(
+            "Example: threshold = 10%. \n\n"
+            "Profit 5% (below target) → hold health unchanged (1.0 contribution). \n\n"
+            "Profit 10% (at target) → 0.5 contribution → hold health drops. \n\n"
+            "Profit 20% (2× target) → 0.0 contribution → strong exit pressure."
         )
-        st.caption(f"Formula: **{formula_msg}**")
+        p_exit_thr = st.number_input(
+            "Default Profit EXIT threshold (%) — syncs to stock_hold & etf_hold profiles",
+            value=float(pr.profit_exit_threshold),
+            min_value=1.0, max_value=100.0, step=0.5,
+            help="Sets the threshold in the Profit % parameter of hold profiles",
+        )
 
         st.divider()
 
@@ -389,13 +383,11 @@ def render(settings: Any, version_id: int = 1) -> None:
             pr.hard_stop_stock       = float(hard_stock)
             pr.hard_stop_etf         = float(hard_etf)
             pr.profit_exit_threshold = float(p_exit_thr)
-            pr.profit_exit_weight    = float(p_weight)
             pr.trailing_buffers      = trail_edited.to_dict("records")
             _save_yaml({"portfolio_rules": {
                 "hard_stop_stock":       float(hard_stock),
                 "hard_stop_etf":         float(hard_etf),
                 "profit_exit_threshold": float(p_exit_thr),
-                "profit_exit_weight":    float(p_weight),
                 "trailing_buffers":      trail_edited.to_dict("records"),
             }})
             st.success("Trading rules saved.")

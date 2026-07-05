@@ -164,21 +164,35 @@ def _hold_macd(ind: IndicatorResult) -> tuple[float, str]:
 
 def _hold_profit(ind: IndicatorResult, threshold: float, profit_pct: float = 0.0) -> tuple[float, str]:
     """
-    Profit % contribution for hold health.
-    threshold = profit % at which contribution reaches 1.0.
-    Below 0%  → 0.0 (loss hurts hold health)
-    0-threshold → linear ramp 0→1.0
-    Above threshold → 1.0 (but high profit combined with weak other params → exit)
+    Profit % contribution for HOLD Health — interpreted as an EXIT pressure signal.
+
+    Logic: when profit EXCEEDS the threshold, this parameter reduces hold health
+    (signals it's time to consider exiting). Below threshold, it contributes positively
+    (protecting healthy positions from premature exit).
+
+    Contribution curve:
+      profit < 0      → 1.0  (in loss — no exit pressure, hold health full on this param)
+      0 ≤ p < threshold → 1.0 (below profit target — no exit pressure)
+      p = threshold    → 0.5  (at target — moderate exit pressure)
+      p = 2× threshold → 0.0  (double target — strong exit pressure)
+      p > 2× threshold → 0.0  (cap at maximum exit pressure)
+
+    This way high profit LOWERS hold health → pushes score toward exit threshold.
     """
-    if profit_pct < 0:
-        # Loss — scale penalty 0 at 0% to 0 at -threshold (clamp)
-        return max(0.0, 1.0 + profit_pct / threshold) if threshold > 0 else 0.0, \
-               f"Profit {profit_pct:.1f}%: in loss (reduces hold score)"
-    contribution = min(profit_pct / threshold, 1.0) if threshold > 0 else 0.0
-    label = (f"Profit {profit_pct:.1f}% ≥ {threshold:.0f}% target"
-             if profit_pct >= threshold
-             else f"Profit {profit_pct:.1f}% / {threshold:.0f}% target ({contribution*100:.0f}%)")
-    return contribution, label
+    if profit_pct <= 0 or threshold <= 0:
+        return 1.0, f"Profit {profit_pct:.1f}%: below target — no exit pressure"
+
+    if profit_pct < threshold:
+        return 1.0, f"Profit {profit_pct:.1f}% / {threshold:.0f}% target — below target, hold"
+
+    # At threshold → contribution starts declining from 1.0 → 0.0 over [threshold, 2×threshold]
+    excess   = profit_pct - threshold
+    max_exc  = threshold                       # full exit pressure at 2× threshold
+    contrib  = max(0.0, 1.0 - excess / max_exc)
+    pressure = int((1 - contrib) * 100)
+    label    = (f"Profit {profit_pct:.1f}% exceeds {threshold:.0f}% target "
+                f"— exit pressure {pressure}%")
+    return contrib, label
 
 
 # Maps param name → (entry_fn, hold_fn)
